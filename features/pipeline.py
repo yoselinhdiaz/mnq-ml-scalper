@@ -207,32 +207,37 @@ def make_labels(df: pd.DataFrame,
                 lookahead: int = 6,
                 threshold_atr: float = 0.8) -> pd.Series:
     """
-    3-class labels:
-      1 = LONG  — price rises > threshold_atr * ATR within lookahead bars
-     -1 = SHORT — price falls > threshold_atr * ATR within lookahead bars
-      0 = SKIP  — neither
+    3-class labels (vectorized — fast on large datasets):
+      1 = LONG  — max(high) in next N bars - entry >= threshold * ATR
+     -1 = SHORT — entry - min(low) in next N bars >= threshold * ATR
+      0 = SKIP  — neither or both
+    Uses high/low for TP detection (more realistic than close-only).
     """
     close = df["close"]
+    high  = df["high"]
+    low   = df["low"]
+
     tr = pd.concat([
-        df["high"] - df["low"],
-        (df["high"] - close.shift(1)).abs(),
-        (df["low"]  - close.shift(1)).abs(),
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low  - close.shift(1)).abs(),
     ], axis=1).max(axis=1)
-    atr = tr.ewm(span=14, adjust=False).mean()
+    atr    = tr.ewm(span=14, adjust=False).mean()
+    thresh = threshold_atr * atr
+
+    # Vectorized rolling max/min over the lookahead window (shifted forward)
+    future_high = high.shift(-1).rolling(lookahead).max().shift(-(lookahead - 1))
+    future_low  = low.shift(-1).rolling(lookahead).min().shift(-(lookahead - 1))
+
+    up_move = future_high - close
+    dn_move = close - future_low
+
+    up_hit = up_move >= thresh
+    dn_hit = dn_move >= thresh
 
     labels = pd.Series(0, index=df.index, name="label")
-
-    for i in range(len(df) - lookahead):
-        entry   = close.iloc[i]
-        thresh  = threshold_atr * atr.iloc[i]
-        window  = close.iloc[i + 1 : i + 1 + lookahead]
-        up_hit  = (window - entry).max() >= thresh
-        dn_hit  = (entry - window).max() >= thresh
-        if up_hit and not dn_hit:
-            labels.iloc[i] = 1
-        elif dn_hit and not up_hit:
-            labels.iloc[i] = -1
-        # both or neither → 0 (SKIP)
+    labels[up_hit & ~dn_hit] = 1
+    labels[dn_hit & ~up_hit] = -1
 
     return labels
 

@@ -167,7 +167,7 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
         model, scaler = trainer.load()
     else:
         log.info("Training new model...")
-        model, scaler = trainer.train(df, htf_df, cfg)
+        model, scaler = trainer.train(df, htf_df, cfg, db=db)
 
     state = {"model": model, "scaler": scaler}
 
@@ -294,10 +294,10 @@ if __name__ == "__main__":
         db   = Database()
         feed.connect()
         df     = feed.get_bars(n=cfg["data"]["lookback_bars"])
-        htf_df = feed.get_htf_bars(n=400)
+        htf_df = feed.get_htf_bars(n=400)  # may be None if MT5 unavailable
         db.save_bars_bulk(df)
-        log.info("DB has %d bars", db.bar_count())
-        trainer.train(df, htf_df, cfg)
+        log.info("DB has %d bars total", db.bar_count())
+        trainer.train(df, htf_df, cfg, db=db)
         feed.disconnect()
         db.close()
     else:

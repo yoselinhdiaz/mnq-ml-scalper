@@ -29,10 +29,11 @@ SCALER_PATH = "logs/scaler.joblib"
 
 def train(df: pd.DataFrame,
           htf_df: pd.DataFrame,
-          cfg: dict) -> Tuple[lgb.LGBMClassifier, StandardScaler]:
+          cfg: dict,
+          db=None) -> Tuple[lgb.LGBMClassifier, StandardScaler]:
     """
     Full training pipeline:
-      1. Build features + labels
+      1. Build features + labels (uses DB if available and has more data)
       2. Walk-forward validation (print metrics)
       3. Final fit on all data
       4. Save model + scaler
@@ -41,7 +42,15 @@ def train(df: pd.DataFrame,
     lookahead = cfg["model"]["label_lookahead"]
     thresh    = cfg["model"]["label_threshold_atr"]
 
-    log.info("Building features…")
+    # Use DB bars if df is None or DB has more data
+    if db is not None and (df is None or db.bar_count() > len(df)):
+        log.info("Using DB bars for training (%d bars)", db.bar_count())
+        df = db.load_bars_df(limit=100000)
+
+    if df is None or len(df) == 0:
+        raise RuntimeError("No bar data available for training")
+
+    log.info("Building features...")
     features = build_features(df, htf_df, window=w)
     labels   = make_labels(df, lookahead=lookahead, threshold_atr=thresh)
 

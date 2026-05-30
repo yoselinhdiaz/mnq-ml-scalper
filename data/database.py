@@ -89,6 +89,9 @@ class Database:
 
     def save_bars_bulk(self, df):
         """Save a DataFrame of bars efficiently."""
+        if df is None or len(df) == 0:
+            log.warning("save_bars_bulk: empty dataframe, skipping")
+            return
         rows = [
             (str(idx), row.open, row.high, row.low, row.close, row.volume)
             for idx, row in df.iterrows()
@@ -146,7 +149,7 @@ class Database:
             f"SELECT * FROM bars ORDER BY time DESC LIMIT {limit}",
             self._conn
         )
-        df["time"] = pd.to_datetime(df["time"])
+        df["time"] = pd.to_datetime(df["time"], format="mixed")
         df.set_index("time", inplace=True)
         df.sort_index(inplace=True)
         return df

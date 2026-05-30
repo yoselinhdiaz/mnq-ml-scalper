@@ -42,6 +42,13 @@ class MT5Feed:
             log.error("MT5 account_info failed: %s", mt5.last_error())
             return False
         log.info("MT5 connected — account %s, balance %.2f", info.login, info.balance)
+
+        # Activate symbol so data requests work immediately
+        if not mt5.symbol_select(self.symbol, True):
+            log.error("symbol_select failed for %s: %s", self.symbol, mt5.last_error())
+            return False
+        log.info("Symbol %s ready", self.symbol)
+
         self._connected = True
         return True
 
