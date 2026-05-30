@@ -2,13 +2,13 @@ mt5:
   login: 202016 # Your MT5 account number
   password: "@bcD1234#"
   server: "GNTCapital-Demo"
-  symbol: "US100" # or "MNQc1" depending on broker
+  symbol: "US100." # or "MNQc1" depending on broker
   timeframe: "M1" # 1-minute bars
   htf_timeframe: "M5" # Higher timeframe context
   magic: 20250101 # Magic number for bot orders
 
 data:
-  lookback_bars: 5000 # Bars to fetch on startup
+  lookback_bars: 100000 # Bars to fetch on startup
   feature_window: 30 # Rolling window for features
   retrain_interval_hours: 4 # How often to retrain model
   min_bars_to_trade: 100 # Min bars before first trade

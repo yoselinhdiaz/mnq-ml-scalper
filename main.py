@@ -3,10 +3,10 @@ main.py
 Entry point. Runs the live trading loop.
 
 Usage:
-    python main.py                    # live trading
-    python main.py --paper            # paper mode (signals only, no orders)
-    python main.py --train-only       # train model and exit
-    python main.py --paper --dashboard  # paper mode + live dashboard
+    python main.py                       # live trading
+    python main.py --paper               # paper mode
+    python main.py --paper --dashboard   # paper + live dashboard
+    python main.py --train-only          # train model and exit
 """
 
 import argparse
@@ -14,12 +14,12 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
 
 import numpy as np
 import yaml
 
 from data.mt5_feed import MT5Feed
+from data.database import Database
 from execution.order_sender import OrderSender
 from execution.risk_manager import RiskManager
 from features.pipeline import build_features
@@ -43,14 +43,14 @@ def setup_logging(cfg: dict):
 log = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------ #
-#  Prediction helper                                                   #
+#  Prediction                                                          #
 # ------------------------------------------------------------------ #
 
-def predict(features_row: np.ndarray, state: dict, cfg: dict):
+def predict(features_row: np.ndarray, state: dict):
     model  = state["model"]
     scaler = state["scaler"]
     x      = scaler.transform(features_row.reshape(1, -1))
-    proba  = model.predict_proba(x)[0]   # [P_SHORT, P_SKIP, P_LONG]
+    proba  = model.predict_proba(x)[0]
     cls    = int(np.argmax(proba))
     prob   = float(proba[cls])
     signal = {0: -1, 1: 0, 2: 1}[cls]
@@ -58,17 +58,15 @@ def predict(features_row: np.ndarray, state: dict, cfg: dict):
 
 
 # ------------------------------------------------------------------ #
-#  Paper trade simulator (SL/TP tracking without real orders)          #
+#  Paper trade simulator                                               #
 # ------------------------------------------------------------------ #
 
 class PaperTracker:
-    """Tracks a single open paper trade and checks SL/TP each bar."""
-
     def __init__(self):
         self.direction = None
         self.entry     = None
-        self.sl        = None   # absolute price
-        self.tp        = None   # absolute price
+        self.sl        = None
+        self.tp        = None
         self.lots      = None
         self.open_time = None
 
@@ -76,7 +74,7 @@ class PaperTracker:
     def is_open(self):
         return self.entry is not None
 
-    def open(self, direction, entry, sl_pts, tp_pts, lots, bar_time, sw: "StateWriter"):
+    def open(self, direction, entry, sl_pts, tp_pts, lots, bar_time, sw, db):
         self.direction = direction
         self.entry     = entry
         self.sl        = entry - sl_pts if direction == 1 else entry + sl_pts
@@ -84,31 +82,46 @@ class PaperTracker:
         self.lots      = lots
         self.open_time = bar_time
         log.info("[PAPER] OPEN %s | entry=%.1f SL=%.1f TP=%.1f lots=%.2f",
-                 "LONG" if direction==1 else "SHORT", entry, self.sl, self.tp, lots)
+                 "LONG" if direction == 1 else "SHORT", entry, self.sl, self.tp, lots)
         sw.on_paper_open(bar_time, direction, entry, sl_pts, tp_pts, lots)
 
-    def check(self, high, low, close, bar_time, sw: "StateWriter") -> bool:
-        """Returns True if trade was closed this bar."""
+    def check(self, high, low, close, bar_time, sw, db) -> bool:
         if not self.is_open:
             return False
         sw.on_paper_tick(close)
 
         hit_sl = (self.direction == 1 and low  <= self.sl) or \
-                 (self.direction ==-1 and high >= self.sl)
+                 (self.direction == -1 and high >= self.sl)
         hit_tp = (self.direction == 1 and high >= self.tp) or \
-                 (self.direction ==-1 and low  <= self.tp)
+                 (self.direction == -1 and low  <= self.tp)
 
         if hit_sl:
-            sw.on_paper_close(bar_time, self.sl, "SL")
-            log.info("[PAPER] CLOSE SL | exit=%.1f", self.sl)
-            self._reset()
+            self._close(bar_time, self.sl, "SL", sw, db)
             return True
         if hit_tp:
-            sw.on_paper_close(bar_time, self.tp, "TP")
-            log.info("[PAPER] CLOSE TP | exit=%.1f", self.tp)
-            self._reset()
+            self._close(bar_time, self.tp, "TP", sw, db)
             return True
         return False
+
+    def _close(self, bar_time, exit_price, reason, sw, db):
+        d   = 1 if self.direction == 1 else -1
+        pnl = round((exit_price - self.entry) * d * self.lots * 10, 2)
+        log.info("[PAPER] CLOSE %s | exit=%.1f | pnl=$%.2f", reason, exit_price, pnl)
+        sw.on_paper_close(bar_time, exit_price, reason)
+        db.save_trade(
+            open_time  = self.open_time,
+            close_time = bar_time,
+            direction  = "LONG" if self.direction == 1 else "SHORT",
+            entry      = self.entry,
+            exit       = exit_price,
+            sl         = self.sl,
+            tp         = self.tp,
+            lots       = self.lots,
+            pnl        = pnl,
+            reason     = reason,
+            paper      = True,
+        )
+        self._reset()
 
     def _reset(self):
         self.direction = self.entry = self.sl = self.tp = self.lots = self.open_time = None
@@ -125,6 +138,7 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
     risk   = RiskManager(cfg, feed)
     sender = OrderSender(cfg, feed)
     sw     = StateWriter()
+    db     = Database()
     paper_tracker = PaperTracker()
 
     if dashboard:
@@ -136,16 +150,20 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
         log.error("Cannot connect to MT5. Exiting.")
         sys.exit(1)
 
-    log.info("Fetching historical data for initial training...")
+    log.info("Fetching historical data...")
     df     = feed.get_bars(n=cfg["data"]["lookback_bars"])
     htf_df = feed.get_htf_bars(n=400)
 
     if df is None or len(df) < cfg["data"]["min_bars_to_trade"]:
-        log.error("Not enough bars to start. Exiting.")
+        log.error("Not enough bars. Exiting.")
         sys.exit(1)
 
+    # Save historical bars to DB
+    db.save_bars_bulk(df)
+    log.info("DB has %d bars total", db.bar_count())
+
     if trainer.model_exists():
-        log.info("Loading existing model from disk...")
+        log.info("Loading existing model...")
         model, scaler = trainer.load()
     else:
         log.info("Training new model...")
@@ -153,13 +171,14 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
 
     state = {"model": model, "scaler": scaler}
 
-    retrain_sched = RetrainScheduler(cfg, feed, state)
+    retrain_sched = RetrainScheduler(cfg, feed, state, db)
     retrain_sched.start()
 
     open_tickets: dict = {}
 
     log.info("=" * 60)
-    log.info("US100 ML Scalper started | paper=%s | dashboard=%s", paper, dashboard)
+    log.info("US100 ML Scalper | paper=%s | dashboard=%s", paper, dashboard)
+    log.info("DB: %d bars | %d paper trades", db.bar_count(), db.trade_count())
     log.info("=" * 60)
 
     while True:
@@ -167,7 +186,6 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
             if not feed.wait_for_new_bar():
                 log.warning("Lost MT5 connection - reconnecting...")
                 if not feed.reconnect():
-                    log.error("Reconnect failed. Exiting.")
                     break
                 continue
 
@@ -181,6 +199,7 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
                 continue
 
             last_row   = features.iloc[-1].values
+            feat_dict  = features.iloc[-1].to_dict()
             atr        = float(features.iloc[-1].get("atr14", 1.0))
             chop_index = float(features.iloc[-1].get("chop_index", 0.5))
             bar_time   = str(df.index[-1])
@@ -188,30 +207,31 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
             high       = float(df["high"].iloc[-1])
             low        = float(df["low"].iloc[-1])
 
-            signal, prob = predict(last_row, state, cfg)
+            signal, prob = predict(last_row, state)
 
             log.info("Bar %s | price=%.1f | signal=%+d | prob=%.3f | atr=%.2f | chop=%.2f",
                      bar_time[11:16], price, signal, prob, atr, chop_index)
 
-            # Check paper trade SL/TP
-            if paper and paper_tracker.is_open:
-                paper_tracker.check(high, low, price, bar_time, sw)
+            # Save bar + signal to DB
+            db.save_bar(bar_time, df["open"].iloc[-1], high, low, price, df["volume"].iloc[-1])
+            db.save_signal(bar_time, price, signal, prob, atr, chop_index, feat_dict)
 
-            # Check live positions
+            # Check paper SL/TP
+            if paper and paper_tracker.is_open:
+                paper_tracker.check(high, low, price, bar_time, sw, db)
+
+            # Check live positions closed by MT5
             if not paper:
                 closed = []
                 for ticket in list(open_tickets):
-                    positions = sender.get_open_positions()
-                    if not any(p.ticket == ticket for p in positions):
+                    if not any(p.ticket == ticket for p in sender.get_open_positions()):
                         risk.record_trade_close(0.0)
                         closed.append(ticket)
                 for t in closed:
                     del open_tickets[t]
 
-            # Write dashboard state
             sw.on_bar(bar_time, price, signal, prob, atr, chop_index, paper)
 
-            # Evaluate signal
             params = risk.evaluate(signal, prob, atr, chop_index)
             if params is None:
                 continue
@@ -221,7 +241,7 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
                     paper_tracker.open(
                         params.direction, price,
                         params.sl_points, params.tp_points,
-                        params.lots, bar_time, sw
+                        params.lots, bar_time, sw, db
                     )
             else:
                 ticket = sender.open_position(params)
@@ -244,7 +264,12 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
         feed.disconnect()
     except Exception:
         pass
-    log.info("Scalper stopped.")
+    try:
+        db.close()
+    except Exception:
+        pass
+    log.info("Scalper stopped. DB: %d bars | %d paper trades | PnL: $%.2f",
+             db.bar_count(), db.trade_count(), db.total_pnl())
 
 
 # ------------------------------------------------------------------ #
@@ -266,10 +291,14 @@ if __name__ == "__main__":
 
     if args.train_only:
         feed = MT5Feed(cfg)
+        db   = Database()
         feed.connect()
         df     = feed.get_bars(n=cfg["data"]["lookback_bars"])
         htf_df = feed.get_htf_bars(n=400)
+        db.save_bars_bulk(df)
+        log.info("DB has %d bars", db.bar_count())
         trainer.train(df, htf_df, cfg)
         feed.disconnect()
+        db.close()
     else:
         run(cfg, paper=args.paper, dashboard=args.dashboard)
