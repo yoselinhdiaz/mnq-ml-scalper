@@ -1,0 +1,36 @@
+mt5:
+  login: 202016 # Your MT5 account number
+  password: "@bcD1234#"
+  server: "GNTCapital-Demo"
+  symbol: "US100" # or "MNQc1" depending on broker
+  timeframe: "M1" # 1-minute bars
+  htf_timeframe: "M5" # Higher timeframe context
+  magic: 20250101 # Magic number for bot orders
+
+data:
+  lookback_bars: 5000 # Bars to fetch on startup
+  feature_window: 30 # Rolling window for features
+  retrain_interval_hours: 4 # How often to retrain model
+  min_bars_to_trade: 100 # Min bars before first trade
+
+model:
+  confidence_threshold: 0.62 # Min probability to enter
+  chop_atr_ratio: 0.6 # ATR/range ratio — below = chop, skip
+  label_lookahead: 6 # Bars ahead to compute labels for training
+  label_threshold_atr: 0.8 # TP hit = price moves > ATR * this
+
+risk:
+  risk_per_trade_usd: 30 # USD risked per trade
+  max_simultaneous_trades: 2
+  daily_loss_limit_usd: 120 # Stop trading for the day if hit
+  sl_atr_multiplier: 1.2
+  tp_atr_multiplier_min: 1.0
+  tp_atr_multiplier_max: 3.0
+  allowed_sessions: # UTC hours (adjust for your timezone)
+    - [13, 20] # NYSE session (13:30–20:00 UTC)
+    - [14, 17] # Most liquid window
+
+logging:
+  log_file: "logs/trades.log"
+  model_metrics_file: "logs/model_metrics.log"
+  level: "INFO"
