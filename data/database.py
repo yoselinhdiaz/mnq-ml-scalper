@@ -146,12 +146,19 @@ class Database:
         """Load bars as pandas DataFrame for retraining."""
         import pandas as pd
         df = pd.read_sql(
-            f"SELECT * FROM bars ORDER BY time DESC LIMIT {limit}",
+            f"SELECT time, open, high, low, close, volume FROM bars ORDER BY time DESC LIMIT {limit}",
             self._conn
         )
         df["time"] = pd.to_datetime(df["time"], format="mixed")
         df.set_index("time", inplace=True)
         df.sort_index(inplace=True)
+
+        # Remove duplicate timestamps — keep last (most recent data wins)
+        dupes = df.index.duplicated(keep="last").sum()
+        if dupes > 0:
+            log.info("Removing %d duplicate timestamps from bars", dupes)
+            df = df[~df.index.duplicated(keep="last")]
+
         return df
 
     def bar_count(self) -> int:

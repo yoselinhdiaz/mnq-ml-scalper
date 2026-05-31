@@ -8,7 +8,7 @@ mt5:
   magic: 20250101 # Magic number for bot orders
 
 data:
-  lookback_bars: 100000 # Bars to fetch on startup
+  lookback_bars: 500 # Bars to fetch on startup
   feature_window: 30 # Rolling window for features
   retrain_interval_hours: 4 # How often to retrain model
   min_bars_to_trade: 100 # Min bars before first trade
@@ -17,7 +17,7 @@ model:
   confidence_threshold: 0.62 # Min probability to enter
   chop_atr_ratio: 0.6 # ATR/range ratio — below = chop, skip
   label_lookahead: 6 # Bars ahead to compute labels for training
-  label_threshold_atr: 0.3 # TP hit = price moves > ATR * this
+  label_threshold_atr: 0.4 # TP hit = price moves > ATR * this (~7pts on US100)
 
 risk:
   risk_per_trade_usd: 30 # USD risked per trade
