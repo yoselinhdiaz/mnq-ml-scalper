@@ -12,7 +12,7 @@ def build_features(df: pd.DataFrame,
                    window: int = 30) -> pd.DataFrame:
     """
     Main entry point.
-    Returns DataFrame with all features aligned to df's index.
+    Returns DataFrame with all features aligned to df's index.sql
     Drops NaN rows introduced by rolling calculations.
     """
     f = pd.DataFrame(index=df.index)
@@ -94,12 +94,13 @@ def _volatility(f: pd.DataFrame, df: pd.DataFrame, w: int) -> pd.DataFrame:
     # BB %B position
     f["bb_pct_b"] = (close - (sma20 - 2 * std20)) / (4 * std20)
 
-    # Chop index: ATR ratio over window (high value = chop)
+    # Chop index: normalized 0-1 (classic formula). < 0.5 trending, > 0.7 choppy.
     highest_high = high.rolling(w).max()
     lowest_low   = low.rolling(w).min()
     atr_sum      = tr.rolling(w).sum()
     range_w      = (highest_high - lowest_low).replace(0, np.nan)
-    f["chop_index"] = atr_sum / range_w  # < 0.5 trending, > 0.7 choppy
+    raw_ratio    = (atr_sum / range_w).clip(lower=1e-9)
+    f["chop_index"] = np.log10(raw_ratio) / np.log10(w)
 
     return f
 
@@ -205,13 +206,13 @@ def _htf_context(f: pd.DataFrame,
 
 def make_labels(df: pd.DataFrame,
                 lookahead: int = 6,
-                threshold_atr: float = 0.8) -> pd.Series:
+                threshold_atr: float = 0.4) -> pd.Series:
     """
-    3-class labels (vectorized — fast on large datasets):
-      1 = LONG  — max(high) in next N bars - entry >= threshold * ATR
-     -1 = SHORT — entry - min(low) in next N bars >= threshold * ATR
-      0 = SKIP  — neither or both
-    Uses high/low for TP detection (more realistic than close-only).
+    3-class labels — "first direction wins" (vectorized):
+      1 = LONG  — price hits +threshold before -threshold within lookahead bars
+     -1 = SHORT — price hits -threshold before +threshold
+      0 = SKIP  — tie (same bar) or neither hits threshold
+    Much less SKIP than the old max/min approach.
     """
     close = df["close"]
     high  = df["high"]
@@ -225,19 +226,25 @@ def make_labels(df: pd.DataFrame,
     atr    = tr.ewm(span=14, adjust=False).mean()
     thresh = threshold_atr * atr
 
-    # Vectorized rolling max/min over the lookahead window (shifted forward)
-    future_high = high.shift(-1).rolling(lookahead).max().shift(-(lookahead - 1))
-    future_low  = low.shift(-1).rolling(lookahead).min().shift(-(lookahead - 1))
+    # For each lookahead step k, check if threshold is hit in that bar
+    INF = lookahead + 1
+    first_up = pd.Series(INF, index=df.index)
+    first_dn = pd.Series(INF, index=df.index)
 
-    up_move = future_high - close
-    dn_move = close - future_low
+    for k in range(1, lookahead + 1):
+        up_hit_k = high.shift(-k) >= close + thresh
+        dn_hit_k = low.shift(-k)  <= close - thresh
+        # Record the FIRST bar where each direction is hit
+        first_up = first_up.where(~up_hit_k | (first_up < k), k)
+        first_dn = first_dn.where(~dn_hit_k | (first_dn < k), k)
 
-    up_hit = up_move >= thresh
-    dn_hit = dn_move >= thresh
+    any_up = first_up < INF
+    any_dn = first_dn < INF
 
     labels = pd.Series(0, index=df.index, name="label")
-    labels[up_hit & ~dn_hit] = 1
-    labels[dn_hit & ~up_hit] = -1
+    labels[any_up & (~any_dn | (first_up < first_dn))] = 1   # up wins or only up
+    labels[any_dn & (~any_up | (first_dn < first_up))] = -1  # dn wins or only dn
+    # tie (first_up == first_dn) → stays 0 (SKIP)
 
     return labels
 

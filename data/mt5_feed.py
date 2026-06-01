@@ -89,6 +89,31 @@ class MT5Feed:
     def get_htf_bars(self, n: int = 100) -> Optional[pd.DataFrame]:
         return self.get_bars(n=n, tf=self.htf)
 
+    def get_mtf_trend(self) -> int:
+        """
+        EMA 9/21 crossover on M5 as fast trend reference.
+          +1 = EMA9 > EMA21 on M5 (bullish momentum)
+          -1 = EMA9 < EMA21 on M5 (bearish momentum)
+           0 = unavailable
+        """
+        import numpy as np
+        rates = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M5, 0, 25)
+        if rates is None or len(rates) < 22:
+            return 0
+        closes = np.array([r[4] for r in rates[:-1]])  # exclude incomplete bar
+
+        # EMA calculation
+        def ema(arr, span):
+            k = 2 / (span + 1)
+            e = arr[0]
+            for v in arr[1:]:
+                e = v * k + e * (1 - k)
+            return e
+
+        ema9  = ema(closes[-15:], 9)
+        ema21 = ema(closes, 21)
+        return 1 if ema9 > ema21 else -1
+
     def get_latest_bar(self) -> Optional[pd.Series]:
         """Return the last completed bar."""
         df = self.get_bars(n=2)
@@ -119,6 +144,10 @@ class MT5Feed:
     # ------------------------------------------------------------------ #
     #  Symbol info                                                         #
     # ------------------------------------------------------------------ #
+
+    def get_balance(self) -> float:
+        info = mt5.account_info()
+        return info.balance if info else 0.0
 
     def get_symbol_info(self) -> Optional[object]:
         return mt5.symbol_info(self.symbol)

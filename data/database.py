@@ -152,6 +152,9 @@ class Database:
         df["time"] = pd.to_datetime(df["time"], format="mixed")
         df.set_index("time", inplace=True)
         df.sort_index(inplace=True)
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df.dropna(inplace=True)
 
         # Remove duplicate timestamps — keep last (most recent data wins)
         dupes = df.index.duplicated(keep="last").sum()

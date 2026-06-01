@@ -25,9 +25,25 @@ class RiskManager:
         self.cfg              = cfg
         self.feed             = feed
         self._daily_loss      = 0.0
-        self._open_trades     = 0
         self._today           = date.today()
-        self._blocked         = False      # True = daily limit hit
+        self._blocked         = False
+        self._open_tickets    = None
+
+        self._daily_limit = cfg["risk"].get("daily_loss_limit_usd", 120.0)
+
+    def set_open_tickets(self, open_tickets: dict):
+        self._open_tickets = open_tickets
+
+    def compute_daily_limit(self):
+        """Call after MT5 is connected to set limit from account balance %."""
+        if "daily_loss_limit_pct" in self.cfg["risk"]:
+            balance = self.feed.get_balance()
+            pct     = self.cfg["risk"]["daily_loss_limit_pct"]
+            self._daily_limit = balance * pct
+            log.info("Daily loss limit: $%.2f (%.0f%% of $%.2f balance)",
+                     self._daily_limit, pct * 100, balance)
+        else:
+            log.info("Daily loss limit: $%.2f", self._daily_limit)
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
@@ -37,7 +53,8 @@ class RiskManager:
                  signal: int,
                  probability: float,
                  atr: float,
-                 chop_index: float) -> Optional[TradeParams]:
+                 chop_index: float,
+                 mtf_trend: int = 0) -> Optional[TradeParams]:
         """
         Returns TradeParams if trade is allowed, None otherwise.
 
@@ -49,6 +66,18 @@ class RiskManager:
         self._reset_if_new_day()
 
         if signal == 0:
+            return None
+
+        # Dynamic threshold: counter-trend trades need higher confidence
+        base_threshold = self.cfg["model"]["confidence_threshold"]
+        counter_boost  = self.cfg["model"].get("counter_trend_boost", 0.10)
+        required_prob  = base_threshold if (mtf_trend == 0 or signal == mtf_trend) \
+                         else base_threshold + counter_boost
+
+        if probability < required_prob:
+            log.debug("Trade blocked: prob %.3f < required %.3f (%s trend)",
+                      probability, required_prob,
+                      "with" if signal == mtf_trend else "counter")
             return None
 
         reason = self._check_filters(probability, chop_index)
@@ -64,19 +93,18 @@ class RiskManager:
         return params
 
     def record_trade_open(self):
-        self._open_trades += 1
+        pass  # open count is derived from open_tickets dict
 
     def record_trade_close(self, pnl_usd: float):
-        self._open_trades = max(0, self._open_trades - 1)
         if pnl_usd < 0:
             self._daily_loss += abs(pnl_usd)
             log.info("Daily loss updated: -$%.2f (total: $%.2f / $%.2f)",
                      abs(pnl_usd),
                      self._daily_loss,
-                     self.cfg["risk"]["daily_loss_limit_usd"])
-            if self._daily_loss >= self.cfg["risk"]["daily_loss_limit_usd"]:
+                     self._daily_limit)
+            if self._daily_loss >= self._daily_limit:
                 self._blocked = True
-                log.warning("DAILY LOSS LIMIT HIT — trading blocked for today")
+                log.warning("DAILY LOSS LIMIT HIT ($%.2f) — trading blocked for today", self._daily_limit)
 
     @property
     def is_blocked(self) -> bool:
@@ -84,7 +112,7 @@ class RiskManager:
 
     @property
     def open_trades(self) -> int:
-        return self._open_trades
+        return len(self._open_tickets) if self._open_tickets is not None else 0
 
     @property
     def daily_loss(self) -> float:
@@ -95,14 +123,25 @@ class RiskManager:
     # ------------------------------------------------------------------ #
 
     def _check_filters(self, prob: float, chop: float) -> Optional[str]:
+        from datetime import datetime, timezone
         if self._blocked:
             return "daily loss limit"
-        if self._open_trades >= self.cfg["risk"]["max_simultaneous_trades"]:
-            return f"max trades ({self._open_trades})"
-        if prob < self.cfg["model"]["confidence_threshold"]:
-            return f"low confidence ({prob:.3f})"
+        open_count = len(self._open_tickets) if self._open_tickets is not None else 0
+        if open_count >= self.cfg["risk"]["max_simultaneous_trades"]:
+            return f"max trades ({open_count})"
+        # confidence check is handled before _check_filters via dynamic threshold
+        if False:  # placeholder — kept for structure
         if chop > 0.7:
             return f"chop detected ({chop:.2f})"
+
+        # Session filter — only open trades during allowed UTC hours
+        sessions = self.cfg["risk"].get("allowed_sessions", [])
+        if sessions:
+            hour = datetime.now(timezone.utc).hour + datetime.now(timezone.utc).minute / 60
+            in_session = any(start <= hour < end for start, end in sessions)
+            if not in_session:
+                return f"outside session (UTC {hour:.1f}h)"
+
         return None
 
     def _size_trade(self, direction: int, atr: float) -> Optional[TradeParams]:
@@ -111,13 +150,14 @@ class RiskManager:
         tp_min      = self.cfg["risk"]["tp_atr_multiplier_min"]
         tp_max      = self.cfg["risk"]["tp_atr_multiplier_max"]
 
-        tick_value  = self.feed.get_tick_value()  # USD per tick per lot
-        point       = self.feed.get_point()       # e.g. 0.25 for MNQ
+        tick_value     = self.feed.get_tick_value()  # USD per tick per lot
+        point          = self.feed.get_point()
+        contract_size  = self.cfg["mt5"].get("contract_size", 1)
         if tick_value == 0 or point == 0:
             return None
 
         sl_points   = sl_mult * atr
-        usd_per_lot = (sl_points / point) * tick_value
+        usd_per_lot = (sl_points / point) * tick_value * contract_size
         lots        = round(risk_usd / usd_per_lot, 2) if usd_per_lot > 0 else 0.01
         lots        = max(0.01, min(lots, 5.0))  # cap at 5 lots
 

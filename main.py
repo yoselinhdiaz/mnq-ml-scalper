@@ -13,6 +13,7 @@ import argparse
 import logging
 import os
 import sys
+import threading
 import time
 
 import numpy as np
@@ -128,6 +129,76 @@ class PaperTracker:
 
 
 # ------------------------------------------------------------------ #
+#  Breakeven monitor (background thread, checks every 10s)            #
+# ------------------------------------------------------------------ #
+
+class BreakevenMonitor:
+    """
+    Checks every second: when floating profit >= trigger_usd,
+    moves SL to a price that locks in lock_usd profit.
+    """
+    def __init__(self, cfg: dict, sender, feed, open_tickets: dict):
+        self.cfg          = cfg
+        self.sender       = sender
+        self.feed         = feed
+        self.open_tickets = open_tickets
+        self._stop        = threading.Event()
+        self._thread      = threading.Thread(target=self._loop, daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+
+    def _loop(self):
+        while not self._stop.is_set():
+            self._check()
+            self._stop.wait(1)
+
+    def _check(self):
+        min_profit  = self.cfg["risk"].get("breakeven_min_profit_usd", 25.0)
+        tick_value  = self.feed.get_tick_value()
+        point       = self.feed.get_point()
+        contract_sz = self.cfg["mt5"].get("contract_size", 1)
+
+        if tick_value == 0 or point == 0:
+            return
+
+        for ticket, info in list(self.open_tickets.items()):
+            if info.get("be_done"):
+                continue
+
+            pos_info = self.sender.get_position_info(ticket)
+            if pos_info is None:
+                continue
+
+            spread_cost = info.get("spread_cost", 0.0)
+            trigger     = min_profit + spread_cost          # e.g. $25 + $2 = $27
+            profit      = pos_info["profit"]
+
+            if profit < trigger:
+                continue
+
+            # Move SL to entry + spread_cost in price pts (net breakeven after spread)
+            direction        = info["direction"]
+            entry            = pos_info["entry"]
+            lots             = pos_info["lots"]
+            profit_per_point = lots * (tick_value / point) * contract_sz
+
+            if profit_per_point == 0:
+                continue
+
+            lock_pts = spread_cost / profit_per_point       # pts to cover spread cost
+            new_sl   = round(entry + lock_pts * direction, 2)
+
+            if self.sender.modify_sl(ticket, new_sl):
+                info["be_done"] = True
+                log.info("B/E activated | ticket=%d | profit=%.2f >= trigger=%.2f | sl=%.2f (covers spread $%.2f)",
+                         ticket, profit, trigger, new_sl, spread_cost)
+
+
+# ------------------------------------------------------------------ #
 #  Main loop                                                           #
 # ------------------------------------------------------------------ #
 
@@ -149,6 +220,8 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
     if not feed.connect():
         log.error("Cannot connect to MT5. Exiting.")
         sys.exit(1)
+
+    risk.compute_daily_limit()
 
     log.info("Fetching historical data...")
     df     = feed.get_bars(n=cfg["data"]["lookback_bars"])
@@ -175,6 +248,26 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
     retrain_sched.start()
 
     open_tickets: dict = {}
+    risk.set_open_tickets(open_tickets)
+
+    # Re-load any positions already open in MT5 (e.g. after restart)
+    if not paper:
+        existing = sender.get_open_positions()
+        for pos in existing:
+            features_now = build_features(df, None, window=cfg["data"]["feature_window"])
+            atr_now = float(features_now.iloc[-1].get("atr14", 10.0)) if len(features_now) else 10.0
+            open_tickets[pos.ticket] = {
+                "direction": 1 if pos.type == 0 else -1,  # 0=BUY, 1=SELL
+                "entry":     pos.price_open,
+                "atr":       atr_now,
+                "be_done":   False,
+            }
+            log.info("Loaded existing position | ticket=%d | %s @ %.2f",
+                     pos.ticket, "LONG" if pos.type == 0 else "SHORT", pos.price_open)
+
+    be_monitor = BreakevenMonitor(cfg, sender, feed, open_tickets)
+    if not paper:
+        be_monitor.start()
 
     log.info("=" * 60)
     log.info("US100 ML Scalper | paper=%s | dashboard=%s", paper, dashboard)
@@ -192,9 +285,8 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
             df = feed.get_bars(n=cfg["data"]["lookback_bars"])
             if df is None:
                 continue
-            htf_df = feed.get_htf_bars(n=100)
 
-            features = build_features(df, htf_df, window=cfg["data"]["feature_window"])
+            features = build_features(df, None, window=cfg["data"]["feature_window"])
             if len(features) == 0:
                 continue
 
@@ -220,19 +312,41 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
             if paper and paper_tracker.is_open:
                 paper_tracker.check(high, low, price, bar_time, sw, db)
 
-            # Check live positions closed by MT5
+            # Detect live positions closed by MT5 (SL/TP hit)
             if not paper:
-                closed = []
-                for ticket in list(open_tickets):
-                    if not any(p.ticket == ticket for p in sender.get_open_positions()):
-                        risk.record_trade_close(0.0)
-                        closed.append(ticket)
+                open_pos_tickets = {p.ticket for p in sender.get_open_positions()}
+                closed = [t for t in open_tickets if t not in open_pos_tickets]
                 for t in closed:
+                    info = open_tickets[t]
+                    # Recover PnL from MT5 deal history
+                    import MetaTrader5 as _mt5
+                    deals = _mt5.history_deals_get(position=t)
+                    pnl = sum(d.profit for d in deals) if deals else 0.0
+                    exit_price = deals[-1].price if deals else 0.0
+                    risk.record_trade_close(pnl)
+                    db.save_trade(
+                        open_time  = str(info.get("open_time", bar_time)),
+                        close_time = bar_time,
+                        direction  = "LONG" if info["direction"] == 1 else "SHORT",
+                        entry      = info["entry"],
+                        exit       = exit_price,
+                        sl         = 0.0,
+                        tp         = 0.0,
+                        lots       = info.get("lots", 0.0),
+                        pnl        = pnl,
+                        reason     = "MT5",
+                        paper      = False,
+                    )
+                    log.info("Trade closed | ticket=%d | pnl=%.2f", t, pnl)
                     del open_tickets[t]
 
             sw.on_bar(bar_time, price, signal, prob, atr, chop_index, paper)
 
-            params = risk.evaluate(signal, prob, atr, chop_index)
+            mtf_trend = feed.get_mtf_trend() if not paper else 0
+            if mtf_trend != 0:
+                log.info("MTF trend: %s", "BULLISH" if mtf_trend == 1 else "BEARISH")
+
+            params = risk.evaluate(signal, prob, atr, chop_index, mtf_trend)
             if params is None:
                 continue
 
@@ -244,9 +358,45 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
                         params.lots, bar_time, sw, db
                     )
             else:
+                # Handle opposite direction positions
+                flip_threshold = cfg["model"].get("flip_confidence_threshold", 0.60)
+                conflicting = [
+                    t for t, info in list(open_tickets.items())
+                    if isinstance(info, dict) and info.get("direction") == -params.direction
+                ]
+                if conflicting:
+                    if prob >= flip_threshold:
+                        # High confidence: close opposite and flip
+                        for t in conflicting:
+                            pnl = sender.close_position(t) or 0.0
+                            risk.record_trade_close(pnl)
+                            del open_tickets[t]
+                            log.info("Momentum flip: closed %s ticket=%d pnl=%.2f",
+                                     "LONG" if -params.direction == 1 else "SHORT", t, pnl)
+                    else:
+                        # Low confidence: don't open — would create opposite positions
+                        log.debug("Trade blocked: opposite position open, confidence %.3f < flip threshold %.3f",
+                                  prob, flip_threshold)
+                        continue
+
                 ticket = sender.open_position(params)
                 if ticket:
-                    open_tickets[ticket] = signal
+                    # Spread cost in USD: spread_pts (in ticks) × tick_value × lots × contract_size
+                    spread_pts   = feed.get_spread_points()   # in ticks (e.g. 280 ticks)
+                    tick_value   = feed.get_tick_value()       # USD per tick per lot
+                    contract_sz  = cfg["mt5"].get("contract_size", 1)
+                    spread_cost  = spread_pts * tick_value * params.lots * contract_sz
+
+                    open_tickets[ticket] = {
+                        "direction":   params.direction,
+                        "entry":       price,
+                        "atr":         atr,
+                        "lots":        params.lots,
+                        "open_time":   bar_time,
+                        "spread_cost": spread_cost,
+                        "be_done":     False,
+                    }
+                    log.info("Spread cost for ticket=%d: $%.2f", ticket, spread_cost)
                     risk.record_trade_open()
 
         except KeyboardInterrupt:
@@ -258,6 +408,10 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
 
     try:
         retrain_sched.stop()
+    except Exception:
+        pass
+    try:
+        be_monitor.stop()
     except Exception:
         pass
     try:

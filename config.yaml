@@ -6,6 +6,7 @@ mt5:
   timeframe: "M1" # 1-minute bars
   htf_timeframe: "M5" # Higher timeframe context
   magic: 20250101 # Magic number for bot orders
+  contract_size: 10 # Broker multiplier (not exposed via API, verified empirically)
 
 data:
   lookback_bars: 500 # Bars to fetch on startup
@@ -14,7 +15,9 @@ data:
   min_bars_to_trade: 100 # Min bars before first trade
 
 model:
-  confidence_threshold: 0.62 # Min probability to enter
+  confidence_threshold: 0.42      # Min probability — with M5 EMA9/21 trend
+  counter_trend_boost: 0.10       # Extra confidence required when going against M5 trend (→ 0.52)
+  flip_confidence_threshold: 0.50 # Min probability to close opposite and flip direction
   chop_atr_ratio: 0.6 # ATR/range ratio — below = chop, skip
   label_lookahead: 6 # Bars ahead to compute labels for training
   label_threshold_atr: 0.4 # TP hit = price moves > ATR * this (~7pts on US100)
@@ -22,13 +25,12 @@ model:
 risk:
   risk_per_trade_usd: 30 # USD risked per trade
   max_simultaneous_trades: 2
-  daily_loss_limit_usd: 120 # Stop trading for the day if hit
+  daily_loss_limit_pct: 0.10 # Stop trading if daily loss >= 10% of account balance
   sl_atr_multiplier: 1.2
+  breakeven_min_profit_usd: 20  # Trigger B/E when profit >= this + spread_cost
   tp_atr_multiplier_min: 1.0
   tp_atr_multiplier_max: 3.0
-  allowed_sessions: # UTC hours (adjust for your timezone)
-    - [13, 20] # NYSE session (13:30–20:00 UTC)
-    - [14, 17] # Most liquid window
+  allowed_sessions: [] # empty = 24h, or e.g. [[13,20]] for NYSE only
 
 logging:
   log_file: "logs/trades.log"

@@ -24,7 +24,7 @@ class RetrainScheduler:
         self.interval_h    = cfg["data"]["retrain_interval_hours"]
         self._stop_event   = threading.Event()
         self._thread       = None
-        self._last_retrain = None
+        self._last_retrain = datetime.utcnow()  # start clock from boot
 
     def start(self):
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -43,8 +43,6 @@ class RetrainScheduler:
                 self._last_retrain = now
 
     def _should_retrain(self, now: datetime) -> bool:
-        if self._last_retrain is None:
-            return False
         elapsed_h = (now - self._last_retrain).total_seconds() / 3600
         return elapsed_h >= self.interval_h
 
@@ -60,17 +58,16 @@ class RetrainScheduler:
             df = None
             if self.db and self.db.bar_count() > lookback:
                 log.info("Retraining from DB (%d bars)", self.db.bar_count())
-                df = self.db.load_bars_df(limit=20000)
+                df = self.db.load_bars_df(limit=100000)
             
             if df is None:
                 df = self.feed.get_bars(n=lookback)
 
-            htf_df = self.feed.get_htf_bars(n=200)
-            if df is None or htf_df is None:
+            if df is None:
                 log.warning("Retrain skipped - could not fetch bars")
                 return
 
-            features = build_features(df, htf_df, window=w)
+            features = build_features(df, None, window=w)
             labels   = make_labels(df, lookahead=lookahead, threshold_atr=thresh)
 
             common = features.index.intersection(labels.index)

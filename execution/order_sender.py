@@ -58,7 +58,7 @@ class OrderSender:
             "magic":         self.magic,
             "comment":       f"ml_scalper_atr{params.atr:.1f}",
             "type_time":     mt5.ORDER_TIME_GTC,
-            "type_filling":  mt5.ORDER_FILLING_IOC,
+            "type_filling":  mt5.ORDER_FILLING_FOK,
         }
 
         result = mt5.order_send(request)
@@ -110,7 +110,7 @@ class OrderSender:
             "magic":         self.magic,
             "comment":       "ml_scalper_close",
             "type_time":     mt5.ORDER_TIME_GTC,
-            "type_filling":  mt5.ORDER_FILLING_IOC,
+            "type_filling":  mt5.ORDER_FILLING_FOK,
         }
 
         result = mt5.order_send(request)
@@ -137,6 +137,14 @@ class OrderSender:
     def get_position_pnl(self, ticket: int) -> Optional[float]:
         positions = mt5.positions_get(ticket=ticket)
         return positions[0].profit if positions else None
+
+    def get_position_info(self, ticket: int) -> Optional[dict]:
+        """Returns profit, entry price, and volume for a live position."""
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            return None
+        pos = positions[0]
+        return {"profit": pos.profit, "entry": pos.price_open, "lots": pos.volume}
 
     def modify_sl(self, ticket: int, new_sl: float) -> bool:
         """Move stop loss (e.g. to breakeven)."""
