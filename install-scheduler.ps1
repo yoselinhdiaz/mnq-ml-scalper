@@ -1,0 +1,64 @@
+# install-scheduler.ps1 — Registra las tareas programadas en Windows
+# Ejecutar UNA SOLA VEZ como Administrador
+
+$BOT_DIR   = "C:\source\repos\mnq-ml-scalper"
+$SCRIPT    = "$BOT_DIR\run.ps1"
+$PS_EXE    = "powershell.exe"
+$PS_ARGS   = "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$SCRIPT`""
+
+# --- Tarea START: cada domingo a las 5:30 PM ---
+$triggerStart = New-ScheduledTaskTrigger `
+    -Weekly -DaysOfWeek Sunday -At "17:30"
+
+$actionStart = New-ScheduledTaskAction `
+    -Execute $PS_EXE -Argument $PS_ARGS -WorkingDirectory $BOT_DIR
+
+$settingsStart = New-ScheduledTaskSettingsSet `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 120) `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 5) `
+    -StartWhenAvailable
+
+Register-ScheduledTask `
+    -TaskName   "MNQ-Bot-Start" `
+    -Trigger    $triggerStart `
+    -Action     $actionStart `
+    -Settings   $settingsStart `
+    -RunLevel   Highest `
+    -Force `
+    -Description "Inicia MT5 + bot US100 cada domingo 5:30 PM"
+
+Write-Host "Tarea MNQ-Bot-Start registrada"
+
+# --- Tarea STOP: cada viernes a las 5:30 PM ---
+# El watchdog se detiene solo, pero esta tarea lo fuerza si el proceso sigue vivo
+
+$stopScript = @"
+Get-Process 'python'     -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process 'terminal64' -ErrorAction SilentlyContinue | Stop-Process -Force
+"@
+
+$stopFile = "$BOT_DIR\stop-bot.ps1"
+Set-Content -Path $stopFile -Value $stopScript -Encoding UTF8
+
+$triggerStop = New-ScheduledTaskTrigger `
+    -Weekly -DaysOfWeek Friday -At "17:30"
+
+$actionStop = New-ScheduledTaskAction `
+    -Execute $PS_EXE `
+    -Argument "-NonInteractive -ExecutionPolicy Bypass -File `"$stopFile`"" `
+    -WorkingDirectory $BOT_DIR
+
+Register-ScheduledTask `
+    -TaskName   "MNQ-Bot-Stop" `
+    -Trigger    $triggerStop `
+    -Action     $actionStop `
+    -Settings   (New-ScheduledTaskSettingsSet) `
+    -RunLevel   Highest `
+    -Force `
+    -Description "Detiene MT5 + bot US100 cada viernes 5:30 PM"
+
+Write-Host "Tarea MNQ-Bot-Stop registrada"
+Write-Host ""
+Write-Host "Listo. Para verificar: Get-ScheduledTask -TaskName 'MNQ-Bot-*'"
+Write-Host "Para ejecutar ahora manualmente: Start-ScheduledTask -TaskName 'MNQ-Bot-Start'"

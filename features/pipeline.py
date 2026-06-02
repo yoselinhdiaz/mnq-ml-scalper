@@ -34,20 +34,27 @@ def build_features(df: pd.DataFrame,
 
 def _momentum(f: pd.DataFrame, df: pd.DataFrame, w: int) -> pd.DataFrame:
     close = df["close"]
+    high  = df["high"]
+    low   = df["low"]
 
     # Rate of change
     f["roc_3"]  = close.pct_change(3)
     f["roc_10"] = close.pct_change(10)
 
     # RSI
-    f["rsi_14"] = _rsi(close, 14)
+    rsi = _rsi(close, 14)
+    f["rsi_14"] = rsi
+
+    # RSI momentum — direction of RSI
+    f["rsi_slope"] = rsi - rsi.shift(3)
 
     # MACD histogram
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-    macd  = ema12 - ema26
+    ema12  = close.ewm(span=12, adjust=False).mean()
+    ema26  = close.ewm(span=26, adjust=False).mean()
+    macd   = ema12 - ema26
     signal = macd.ewm(span=9, adjust=False).mean()
-    f["macd_hist"] = macd - signal
+    f["macd_hist"]  = macd - signal
+    f["macd_slope"] = (macd - signal) - (macd - signal).shift(2)  # accelerating/decelerating
 
     # EMA alignment (fast > slow = bullish)
     ema9  = close.ewm(span=9,  adjust=False).mean()
@@ -60,9 +67,25 @@ def _momentum(f: pd.DataFrame, df: pd.DataFrame, w: int) -> pd.DataFrame:
         (ema21 < ema50).astype(int)
     )  # range: -2 to +2
 
+    # Distance from EMA9 (how stretched price is)
+    f["dist_ema9"] = (close - ema9) / ema9
+
     # Consecutive bar direction
     direction = np.sign(close - close.shift(1))
     f["consec_bars"] = direction.rolling(5).sum()  # -5 to +5
+
+    # Bar size relative to recent average (momentum quality)
+    bar_size = high - low
+    f["bar_size_ratio"] = bar_size / bar_size.rolling(10).mean().replace(0, np.nan)
+
+    # ADX — trend strength (14 period)
+    f["adx"] = _adx(high, low, close, 14)
+
+    # Price position in rolling range (0=bottom 1=top)
+    roll_high = high.rolling(20).max()
+    roll_low  = low.rolling(20).min()
+    roll_range = (roll_high - roll_low).replace(0, np.nan)
+    f["price_position"] = (close - roll_low) / roll_range
 
     return f
 
@@ -261,3 +284,30 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
     avg_l  = loss.ewm(alpha=1 / period, adjust=False).mean()
     rs     = avg_g / avg_l.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
+
+
+def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+    """Average Directional Index — measures trend strength (0-100, >25 = strong trend)."""
+    prev_high  = high.shift(1)
+    prev_low   = low.shift(1)
+    prev_close = close.shift(1)
+
+    up_move   = high - prev_high
+    down_move = prev_low - low
+
+    plus_dm  = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+
+    atr    = tr.ewm(span=period, adjust=False).mean()
+    plus_di  = 100 * pd.Series(plus_dm,  index=high.index).ewm(span=period, adjust=False).mean() / atr.replace(0, np.nan)
+    minus_di = 100 * pd.Series(minus_dm, index=high.index).ewm(span=period, adjust=False).mean() / atr.replace(0, np.nan)
+
+    dx  = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
+    adx = dx.ewm(span=period, adjust=False).mean()
+    return adx

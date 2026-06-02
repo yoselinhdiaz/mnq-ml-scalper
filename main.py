@@ -249,6 +249,8 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
 
     open_tickets: dict = {}
     risk.set_open_tickets(open_tickets)
+    mtf_history: list = []   # last N MTF readings for stability check
+    MTF_CONFIRM  = 3         # bars the trend must hold before allowing entry
 
     # Re-load any positions already open in MT5 (e.g. after restart)
     if not paper:
@@ -343,10 +345,21 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
             sw.on_bar(bar_time, price, signal, prob, atr, chop_index, paper)
 
             mtf_trend = feed.get_mtf_trend() if not paper else 0
-            if mtf_trend != 0:
-                log.info("MTF trend: %s", "BULLISH" if mtf_trend == 1 else "BEARISH")
+            mtf_history.append(mtf_trend)
+            if len(mtf_history) > MTF_CONFIRM:
+                mtf_history.pop(0)
 
-            params = risk.evaluate(signal, prob, atr, chop_index, mtf_trend)
+            # Solo usar el trend si se mantiene estable N barras consecutivas
+            stable_trend = mtf_trend if (
+                len(mtf_history) == MTF_CONFIRM and
+                all(t == mtf_trend for t in mtf_history)
+            ) else 0
+
+            if stable_trend != 0:
+                log.info("MTF trend: %s (confirmed %d bars)",
+                         "BULLISH" if stable_trend == 1 else "BEARISH", MTF_CONFIRM)
+
+            params = risk.evaluate(signal, prob, atr, chop_index, stable_trend)
             if params is None:
                 continue
 

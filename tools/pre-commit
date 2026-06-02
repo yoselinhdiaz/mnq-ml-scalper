@@ -1,0 +1,130 @@
+#!/bin/sh
+# ============================================================
+# DevAssistant — pre-commit hook (Opción C)
+#
+# INSTALACIÓN:
+#   Unix/Mac:
+#     cp tools/pre-commit .git/hooks/pre-commit
+#     chmod +x .git/hooks/pre-commit
+#
+#   Windows (Git Bash):
+#     cp tools/pre-commit .git/hooks/pre-commit
+#
+# QUÉ HACE:
+#   Al ejecutar "git commit", detecta los archivos JS/JSX
+#   modificados en el staging area y genera un archivo
+#   .devassistant-review.txt listo para pegar en Copilot Chat.
+#
+#   Si hay archivos de más de 300 líneas, los resume por nombre
+#   para no saturar el prompt.
+#
+# SKIP (commit sin review):
+#   git commit --no-verify
+# ============================================================
+
+REVIEW_FILE=".devassistant-review.txt"
+MAX_LINES=300
+CHANGED=""
+
+# Obtener archivos JS/JSX en staging (excluir tests y node_modules)
+CHANGED=$(git diff --cached --name-only --diff-filter=ACM \
+  | grep -E '\.(js|jsx)$' \
+  | grep -v '\.test\.\(js\|jsx\)$' \
+  | grep -v 'node_modules' \
+  | grep -v '__tests__')
+
+# Si no hay archivos relevantes, salir sin bloquear el commit
+if [ -z "$CHANGED" ]; then
+  exit 0
+fi
+
+FILE_COUNT=$(echo "$CHANGED" | wc -l | tr -d ' ')
+TOTAL_LINES=0
+
+# ── Construir el prompt ───────────────────────────────────────────────────────
+
+{
+  echo "review these files changed in this commit:"
+  echo ""
+
+  for FILE in $CHANGED; do
+    if [ ! -f "$FILE" ]; then
+      continue
+    fi
+
+    LINES=$(wc -l < "$FILE" | tr -d ' ')
+    TOTAL_LINES=$((TOTAL_LINES + LINES))
+
+    if [ "$LINES" -gt "$MAX_LINES" ]; then
+      # Archivo grande: incluir solo la primera parte con aviso
+      echo "=== $FILE ($LINES lines — showing first $MAX_LINES) ==="
+      echo '```javascript'
+      head -n "$MAX_LINES" "$FILE"
+      echo "// ... ($((LINES - MAX_LINES)) more lines — ask DevAssistant to review $FILE separately for full analysis)"
+      echo '```'
+    else
+      echo "=== $FILE ==="
+      echo '```javascript'
+      cat "$FILE"
+      echo '```'
+    fi
+
+    echo ""
+  done
+
+  echo "---"
+  echo "Files in this commit: $FILE_COUNT | Total lines: $TOTAL_LINES"
+  echo "Commit date: $(date '+%Y-%m-%d %H:%M')"
+
+} > "$REVIEW_FILE"
+
+# ── Copiar al clipboard si está disponible ────────────────────────────────────
+
+CLIPPED=0
+
+# Windows (clip.exe via Git Bash)
+if command -v clip.exe > /dev/null 2>&1; then
+  cat "$REVIEW_FILE" | clip.exe
+  CLIPPED=1
+fi
+
+# macOS
+if command -v pbcopy > /dev/null 2>&1; then
+  cat "$REVIEW_FILE" | pbcopy
+  CLIPPED=1
+fi
+
+# Linux con xclip
+if command -v xclip > /dev/null 2>&1; then
+  cat "$REVIEW_FILE" | xclip -selection clipboard
+  CLIPPED=1
+fi
+
+# ── Mensaje al desarrollador ──────────────────────────────────────────────────
+
+echo ""
+echo "┌─────────────────────────────────────────────────────┐"
+echo "│  DevAssistant — code review ready                   │"
+echo "├─────────────────────────────────────────────────────┤"
+printf "│  Files   : %-41s│\n" "$FILE_COUNT JS/JSX files"
+printf "│  Lines   : %-41s│\n" "$TOTAL_LINES total lines"
+printf "│  Output  : %-41s│\n" "$REVIEW_FILE"
+
+if [ "$CLIPPED" -eq 1 ]; then
+echo "│  Status  : Copied to clipboard                      │"
+echo "│                                                     │"
+echo "│  → Paste in Copilot Chat to get the audit report.  │"
+else
+echo "│  Status  : Saved to .devassistant-review.txt        │"
+echo "│                                                     │"
+echo "│  → Copy the file contents and paste in Copilot.    │"
+fi
+
+echo "│                                                     │"
+echo "│  To skip: git commit --no-verify                   │"
+echo "└─────────────────────────────────────────────────────┘"
+echo ""
+
+# El hook NO bloquea el commit (exit 0 siempre)
+# Si quieres bloquear hasta que el dev confirme, cambia a exit 1
+exit 0

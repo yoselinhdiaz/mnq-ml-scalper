@@ -91,18 +91,17 @@ class MT5Feed:
 
     def get_mtf_trend(self) -> int:
         """
-        EMA 9/21 crossover on M5 as fast trend reference.
-          +1 = EMA9 > EMA21 on M5 (bullish momentum)
-          -1 = EMA9 < EMA21 on M5 (bearish momentum)
+        EMA 9/21 crossover on M1 (fast, reacts immediately to reversals).
+          +1 = EMA9 > EMA21 on M1 (bullish)
+          -1 = EMA9 < EMA21 on M1 (bearish)
            0 = unavailable
         """
         import numpy as np
-        rates = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M5, 0, 25)
+        rates = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M1, 0, 25)
         if rates is None or len(rates) < 22:
             return 0
         closes = np.array([r[4] for r in rates[:-1]])  # exclude incomplete bar
 
-        # EMA calculation
         def ema(arr, span):
             k = 2 / (span + 1)
             e = arr[0]

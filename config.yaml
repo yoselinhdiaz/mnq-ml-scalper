@@ -15,8 +15,8 @@ data:
   min_bars_to_trade: 100 # Min bars before first trade
 
 model:
-  confidence_threshold: 0.42      # Min probability — with M5 EMA9/21 trend
-  counter_trend_boost: 0.10       # Extra confidence required when going against M5 trend (→ 0.52)
+  confidence_threshold: 0.37      # Min probability — with M5 EMA9/21 trend
+  counter_trend_boost: 0.10       # Extra confidence required when going against M5 trend (→ 0.47)
   flip_confidence_threshold: 0.50 # Min probability to close opposite and flip direction
   chop_atr_ratio: 0.6 # ATR/range ratio — below = chop, skip
   label_lookahead: 6 # Bars ahead to compute labels for training

@@ -157,14 +157,17 @@ def _walk_forward(X: np.ndarray, y: np.ndarray, n_splits: int = 5):
 
 def _make_model() -> lgb.LGBMClassifier:
     return lgb.LGBMClassifier(
-        n_estimators=400,
-        learning_rate=0.05,
-        max_depth=6,
-        num_leaves=31,
-        min_child_samples=30,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        class_weight="balanced",  # handles SKIP class imbalance
+        n_estimators=600,
+        learning_rate=0.03,
+        max_depth=7,
+        num_leaves=50,
+        min_child_samples=40,
+        subsample=0.75,
+        subsample_freq=1,
+        colsample_bytree=0.75,
+        reg_alpha=0.1,       # L1 regularization
+        reg_lambda=0.2,      # L2 regularization
+        class_weight="balanced",
         n_jobs=-1,
         verbose=-1,
     )

@@ -129,8 +129,6 @@ class RiskManager:
         open_count = len(self._open_tickets) if self._open_tickets is not None else 0
         if open_count >= self.cfg["risk"]["max_simultaneous_trades"]:
             return f"max trades ({open_count})"
-        # confidence check is handled before _check_filters via dynamic threshold
-        if False:  # placeholder — kept for structure
         if chop > 0.7:
             return f"chop detected ({chop:.2f})"
 
