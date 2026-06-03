@@ -1,7 +1,7 @@
 mt5:
-  login: 0                   # Your MT5 account number
-  password: "YOUR_PASSWORD"  # Your MT5 password
-  server: "Broker-Demo"      # Your MT5 server name
+  login: 202036 # Your MT5 account number
+  password: "@bcD1234#"
+  server: "GNTCapital-Demo"
   symbol: "US100." # or "MNQc1" depending on broker
   timeframe: "M1" # 1-minute bars
   htf_timeframe: "M5" # Higher timeframe context
