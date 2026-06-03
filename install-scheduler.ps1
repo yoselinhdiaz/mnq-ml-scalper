@@ -2,6 +2,16 @@
 # Ejecutar UNA SOLA VEZ como Administrador
 
 $BOT_DIR   = "C:\source\repos\mnq-ml-scalper"
+
+# --- Firewall: abrir puerto 8765 para el dashboard ---
+$fwRule = Get-NetFirewallRule -DisplayName "MNQ Bot Dashboard" -ErrorAction SilentlyContinue
+if (-not $fwRule) {
+    New-NetFirewallRule -DisplayName "MNQ Bot Dashboard" `
+        -Direction Inbound -Protocol TCP -LocalPort 8765 -Action Allow | Out-Null
+    Write-Host "Firewall: puerto 8765 abierto para el dashboard"
+} else {
+    Write-Host "Firewall: regla ya existe"
+}
 $SCRIPT    = "$BOT_DIR\run.ps1"
 $PS_EXE    = "powershell.exe"
 $PS_ARGS   = "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$SCRIPT`""
