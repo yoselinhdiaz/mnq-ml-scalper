@@ -11,8 +11,9 @@ from typing import Optional
 
 
 class StateWriter:
-    def __init__(self, path: str = "logs/state.json"):
+    def __init__(self, path: str = "logs/state.json", device: str = "cpu"):
         self.path        = path
+        self._device     = device
         self._trades     = []   # list of closed paper trades
         self._open_trade = None
         self._equity     = 0.0
@@ -95,6 +96,7 @@ class StateWriter:
             "trades":      self._trades[-50:],   # last 50
             "win_rate":    self._win_rate(),
             "total_trades": len(self._trades),
+            "device":      self._device,
         }
         tmp = self.path + ".tmp"
         with open(tmp, "w") as f:

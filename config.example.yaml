@@ -1,5 +1,5 @@
 mt5:
-  login: 0                   # Your MT5 account number
+  login: 123456              # Your MT5 account number
   password: "YOUR_PASSWORD"  # Your MT5 password
   server: "Broker-Demo"      # Your MT5 server name
   symbol: "US100." # or "MNQc1" depending on broker
@@ -17,9 +17,9 @@ data:
 model:
   device: auto                     # auto | cuda | cpu
   confidence_threshold: 0.38      # Min probability -- with trend
-  counter_trend_boost: 0.08       # Extra confidence going against trend (→ 0.48)
+  counter_trend_boost: 0.08       # Extra confidence going against trend
   flip_confidence_threshold: 0.52 # Min probability to flip direction
-  chop_atr_ratio: 0.6 # ATR/range ratio — below = chop, skip
+  chop_atr_ratio: 0.6 # ATR/range ratio -- below = chop, skip
   label_lookahead: 6 # Bars ahead to compute labels for training
   label_threshold_atr: 0.4 # TP hit = price moves > ATR * this (~7pts on US100)
 

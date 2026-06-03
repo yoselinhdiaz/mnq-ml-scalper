@@ -1,4 +1,4 @@
-# run.ps1 — US100 ML Scalper Watchdog
+# run.ps1 --US100 ML Scalper Watchdog
 # Inicia domingo 5:30 PM, se detiene viernes 5:30 PM (hora local)
 # Monitorea MT5 y el bot cada 60 segundos y los reinicia si caen
 
@@ -26,7 +26,7 @@ function Should-Stop {
 function Ensure-MT5 {
     $proc = Get-Process "terminal64" -ErrorAction SilentlyContinue
     if (-not $proc) {
-        Write-Log "MT5 no esta corriendo — iniciando..."
+        Write-Log "MT5 no esta corriendo --iniciando..."
         Start-Process $MT5_EXE
         Start-Sleep -Seconds 20
         Write-Log "MT5 iniciado"
@@ -36,15 +36,17 @@ function Ensure-MT5 {
 }
 
 function Ensure-Bot {
-    $procs = Get-Process "python" -ErrorAction SilentlyContinue
-    if ($procs -and $procs.Count -gt 1) {
-        Write-Log "ADVERTENCIA: $($procs.Count) procesos Python detectados — matando duplicados..."
-        $procs | ForEach-Object { wmic process where "ProcessId=$($_.Id)" delete 2>$null }
-        Start-Sleep -Seconds 3
-        $procs = $null
+    $botProcs = Get-Process "python" -ErrorAction SilentlyContinue | Where-Object {
+        (Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -match "main\.py"
     }
-    if (-not $procs) {
-        Write-Log "Bot no esta corriendo — iniciando..."
+    if ($botProcs -and @($botProcs).Count -gt 1) {
+        Write-Log "ADVERTENCIA: $(@($botProcs).Count) procesos bot detectados --matando duplicados..."
+        $botProcs | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
+        $botProcs = $null
+    }
+    if (-not $botProcs) {
+        Write-Log "Bot no esta corriendo --iniciando..."
         Start-Process $PYTHON -ArgumentList $BOT_ARGS `
             -WorkingDirectory $BOT_DIR -WindowStyle Hidden
         Write-Log "Bot iniciado"
@@ -53,12 +55,8 @@ function Ensure-Bot {
 
 function Stop-All {
     Write-Log "Deteniendo bot y MT5..."
-    Get-Process "python"     -ErrorAction SilentlyContinue | ForEach-Object {
-        wmic process where "ProcessId=$($_.Id)" delete 2>$null
-    }
-    Get-Process "terminal64" -ErrorAction SilentlyContinue | ForEach-Object {
-        wmic process where "ProcessId=$($_.Id)" delete 2>$null
-    }
+    Get-Process "python"     -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process "terminal64" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Write-Log "Todo detenido"
 }
 
@@ -70,7 +68,7 @@ $mt5_new = Ensure-MT5
 if ($mt5_new) { Start-Sleep -Seconds 10 }
 Ensure-Bot
 
-# Loop principal — verifica cada 60 segundos
+# Loop principal --verifica cada 60 segundos
 while ($true) {
     Start-Sleep -Seconds 60
 

@@ -1,5 +1,5 @@
 MetaTrader5>=5.0.45
-lightgbm>=4.3.0
+xgboost>=2.0.0
 pandas>=2.0.0
 numpy>=1.26.0
 scikit-learn>=1.4.0

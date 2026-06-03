@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime
 
-from model.train import _make_model, _save, load
+from model.train import _make_model, _save, _compute_weights, _resolve_device, load
 from features.pipeline import build_features, make_labels
 from sklearn.preprocessing import StandardScaler
 
@@ -80,8 +80,9 @@ class RetrainScheduler:
 
             scaler   = StandardScaler()
             X_scaled = scaler.fit_transform(X)
-            model    = _make_model()
-            model.fit(X_scaled, y)
+            device   = _resolve_device(self.cfg["model"].get("device", "auto"))
+            model    = _make_model(device)
+            model.fit(X_scaled, y, sample_weight=_compute_weights(y))
 
             self.state["model"]  = model
             self.state["scaler"] = scaler

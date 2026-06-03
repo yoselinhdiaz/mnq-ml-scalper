@@ -216,11 +216,14 @@ class BreakevenMonitor:
 
 def run(cfg: dict, paper: bool = False, dashboard: bool = False):
     from dashboard.state import StateWriter
+    from model.train import _resolve_device
+
+    device = _resolve_device(cfg["model"].get("device", "auto"))
 
     feed   = MT5Feed(cfg)
     risk   = RiskManager(cfg, feed)
     sender = OrderSender(cfg, feed)
-    sw     = StateWriter()
+    sw     = StateWriter(device=device)
     db     = Database()
     paper_tracker = PaperTracker()
 

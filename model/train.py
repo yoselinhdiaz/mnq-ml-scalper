@@ -9,11 +9,12 @@ import os
 from typing import Tuple
 
 import joblib
-import lightgbm as lgb
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 from sklearn.metrics import classification_report
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_sample_weight
 
 import features
 from features.pipeline import build_features, make_labels
@@ -31,7 +32,7 @@ SCALER_PATH = "logs/scaler.joblib"
 
 def train(
     df: pd.DataFrame, htf_df: pd.DataFrame, cfg: dict, db=None
-) -> Tuple[lgb.LGBMClassifier, StandardScaler]:
+) -> Tuple[xgb.XGBClassifier, StandardScaler]:
     """
     Full training pipeline:
       1. Build features + labels (uses DB if available and has more data)
@@ -80,22 +81,24 @@ def train(
 
     log.info("Dataset: %d samples | class dist: %s", len(y), np.bincount(y).tolist())
 
+    device = _resolve_device(cfg["model"].get("device", "auto"))
+
     # Walk-forward validation
-    _walk_forward(X, y, n_splits=5)
+    _walk_forward(X, y, device, n_splits=5)
 
     # Final model on all data
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    model = _make_model()
-    model.fit(X_scaled, y)
+    model = _make_model(device)
+    model.fit(X_scaled, y, sample_weight=_compute_weights(y))
 
     _save(model, scaler)
     log.info("Model saved → %s", MODEL_PATH)
     return model, scaler
 
 
-def load() -> Tuple[lgb.LGBMClassifier, StandardScaler]:
+def load() -> Tuple[xgb.XGBClassifier, StandardScaler]:
     model = joblib.load(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
     return model, scaler
@@ -110,7 +113,7 @@ def model_exists() -> bool:
 # ------------------------------------------------------------------ #
 
 
-def _walk_forward(X: np.ndarray, y: np.ndarray, n_splits: int = 5):
+def _walk_forward(X: np.ndarray, y: np.ndarray, device: str, n_splits: int = 5):
     fold_size = len(X) // (n_splits + 1)
     reports = []
 
@@ -125,8 +128,8 @@ def _walk_forward(X: np.ndarray, y: np.ndarray, n_splits: int = 5):
         X_tr_s = scaler.fit_transform(X_tr)
         X_te_s = scaler.transform(X_te)
 
-        m = _make_model()
-        m.fit(X_tr_s, y_tr)
+        m = _make_model(device)
+        m.fit(X_tr_s, y_tr, sample_weight=_compute_weights(y_tr))
         preds = m.predict(X_te_s)
 
         report = classification_report(
@@ -155,22 +158,41 @@ def _walk_forward(X: np.ndarray, y: np.ndarray, n_splits: int = 5):
 # ------------------------------------------------------------------ #
 
 
-def _make_model() -> lgb.LGBMClassifier:
-    return lgb.LGBMClassifier(
+def _resolve_device(device: str) -> str:
+    if device in ("cuda", "cpu"):
+        return device
+    try:
+        xgb.XGBClassifier(n_estimators=1, device="cuda", verbosity=0).fit(
+            [[1, 2], [3, 4]], [0, 1]
+        )
+        log.info("Device: cuda (GPU detected)")
+        return "cuda"
+    except Exception:
+        log.warning("CUDA not available -- falling back to CPU")
+        return "cpu"
+
+
+def _make_model(device: str = "cpu") -> xgb.XGBClassifier:
+    return xgb.XGBClassifier(
         n_estimators=600,
         learning_rate=0.03,
         max_depth=7,
-        num_leaves=50,
-        min_child_samples=40,
         subsample=0.75,
-        subsample_freq=1,
         colsample_bytree=0.75,
-        reg_alpha=0.1,       # L1 regularization
-        reg_lambda=0.2,      # L2 regularization
-        class_weight="balanced",
+        reg_alpha=0.1,
+        reg_lambda=0.2,
+        objective="multi:softprob",
+        num_class=3,
+        tree_method="hist",
+        device=device,
+        eval_metric="mlogloss",
         n_jobs=-1,
-        verbose=-1,
+        verbosity=0,
     )
+
+
+def _compute_weights(y: np.ndarray) -> np.ndarray:
+    return compute_sample_weight("balanced", y)
 
 
 def _save(model, scaler):

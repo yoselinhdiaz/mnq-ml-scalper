@@ -109,6 +109,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .badge.live   { background: rgba(0,217,126,.12);  color: var(--green); border: 1px solid rgba(0,217,126,.25);
                   animation: pulse 2s infinite; }
   .badge.off    { background: rgba(74,85,104,.15);  color: var(--muted); border: 1px solid var(--border); }
+  .badge.gpu    { background: rgba(77,166,255,.12); color: var(--blue);  border: 1px solid rgba(77,166,255,.25); }
+  .badge.cpu    { background: rgba(74,85,104,.15);  color: var(--muted); border: 1px solid var(--border); }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
 
   .ts { font-size: 11px; color: var(--muted); font-family: var(--sans); }
@@ -192,6 +194,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   <div style="display:flex;align-items:center;gap:12px">
     <div class="logo">US<span>100</span> · ML Scalper</div>
     <span id="mode-badge" class="badge off">OFFLINE</span>
+    <span id="device-badge" class="badge cpu">CPU</span>
   </div>
   <div style="display:flex;align-items:center;gap:10px">
     <span id="update-dot"></span>
@@ -293,6 +296,15 @@ function render(s) {
     badge.textContent = 'PAPER'; badge.className = 'badge paper';
   } else {
     badge.textContent = 'LIVE'; badge.className = 'badge live';
+  }
+
+  // Device badge
+  const dev = (s.device || 'cpu').toLowerCase();
+  const devBadge = $('device-badge');
+  if (dev === 'cuda') {
+    devBadge.textContent = 'GPU'; devBadge.className = 'badge gpu';
+  } else {
+    devBadge.textContent = 'CPU'; devBadge.className = 'badge cpu';
   }
 
   // Last update
