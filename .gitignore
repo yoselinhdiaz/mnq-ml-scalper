@@ -3,6 +3,6 @@ __pycache__/
 *.pyo
 .env
 logs/*.log
-logs/model.joblib
-logs/scaler.joblib
+logs/state.json
+logs/watchdog.log
 notebooks/.ipynb_checkpoints/

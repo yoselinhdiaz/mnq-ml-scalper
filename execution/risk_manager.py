@@ -163,9 +163,8 @@ class RiskManager:
         lots        = round(risk_usd / usd_per_lot, 2) if usd_per_lot > 0 else 0.01
         lots        = max(0.01, min(lots, 5.0))  # cap at 5 lots
 
-        # TP uses tp_min directly (2.5x ATR) — wider target improves R:R
-        tp_mult   = tp_min
-        tp_points = tp_mult * atr
+        # No TP — trailing stop manages exits, TP only caps winners
+        tp_points = 0.0
 
         return TradeParams(
             direction=direction,

@@ -261,7 +261,8 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
 
     open_tickets: dict = {}
     risk.set_open_tickets(open_tickets)
-    mtf_history: list = []   # last N MTF readings for stability check
+    mtf_history:  list = []
+    daily_close_done: set = set()  # tracks dates where daily close was executed
     MTF_CONFIRM  = 3         # bars the trend must hold before allowing entry
 
     # Re-load any positions already open in MT5 (e.g. after restart)
@@ -322,6 +323,22 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
             db.save_bar(bar_time, df["open"].iloc[-1], high, low, price, df["volume"].iloc[-1])
             db.save_signal(bar_time, price, signal, prob, atr, chop_index, feat_dict)
 
+            # Daily force-close at 4:59 PM ET (20:59 UTC) Mon-Fri
+            from datetime import datetime, timezone, date as dt_date
+            now_utc    = datetime.now(timezone.utc)
+            close_hour = cfg["risk"].get("daily_close_utc", 20)
+            today      = dt_date.today()
+            if (now_utc.weekday() < 5 and
+                now_utc.hour == close_hour and
+                now_utc.minute >= 59 and
+                today not in daily_close_done):
+                log.info("Daily close 4:59 PM ET — closing all positions")
+                sender.close_all_positions()
+                for t in list(open_tickets.keys()):
+                    del open_tickets[t]
+                daily_close_done.add(today)
+                risk._daily_trades = 0
+
             # Check paper SL/TP
             if paper and paper_tracker.is_open:
                 paper_tracker.check(high, low, price, bar_time, sw, db)
@@ -356,7 +373,7 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
 
             sw.on_bar(bar_time, price, signal, prob, atr, chop_index, paper)
 
-            mtf_trend = feed.get_mtf_trend() if not paper else 0
+            mtf_trend = feed.get_mtf_trend()
             mtf_history.append(mtf_trend)
             if len(mtf_history) > MTF_CONFIRM:
                 mtf_history.pop(0)
@@ -443,6 +460,12 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
             log.exception("Loop error: %s", e)
             time.sleep(5)
 
+    # Close all open positions before shutdown
+    if not paper:
+        try:
+            sender.close_all_positions()
+        except Exception:
+            pass
     try:
         retrain_sched.stop()
     except Exception:

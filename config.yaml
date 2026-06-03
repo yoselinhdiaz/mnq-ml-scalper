@@ -32,6 +32,7 @@ risk:
   tp_atr_multiplier_min: 1.8
   tp_atr_multiplier_max: 3.0
   allowed_sessions: [] # empty = 24h, or e.g. [[13,20]] for NYSE only
+  daily_close_utc: 20  # Force close all positions at this UTC hour (20 = 4 PM ET)
 
 logging:
   log_file: "logs/trades.log"

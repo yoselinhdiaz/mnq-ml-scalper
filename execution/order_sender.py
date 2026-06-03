@@ -39,12 +39,12 @@ class OrderSender:
             order_type = mt5.ORDER_TYPE_BUY
             price      = tick["ask"]
             sl         = price - params.sl_points
-            tp         = price + params.tp_points
+            tp         = price + params.tp_points if params.tp_points > 0 else 0.0
         else:                       # SHORT
             order_type = mt5.ORDER_TYPE_SELL
             price      = tick["bid"]
             sl         = price + params.sl_points
-            tp         = price - params.tp_points
+            tp         = price - params.tp_points if params.tp_points > 0 else 0.0
 
         request = {
             "action":        mt5.TRADE_ACTION_DEAL,
@@ -133,6 +133,19 @@ class OrderSender:
         if positions is None:
             return []
         return [p for p in positions if p.magic == self.magic]
+
+    def close_all_positions(self) -> float:
+        """Close all open positions — call before shutdown."""
+        positions = self.get_open_positions()
+        total_pnl = 0.0
+        for pos in positions:
+            pnl = self.close_position(pos.ticket)
+            if pnl is not None:
+                total_pnl += pnl
+                log.info("Shutdown close | ticket=%d | pnl=%.2f", pos.ticket, pnl)
+        if positions:
+            log.info("Closed %d positions before shutdown | total pnl=%.2f", len(positions), total_pnl)
+        return total_pnl
 
     def get_position_pnl(self, ticket: int) -> Optional[float]:
         positions = mt5.positions_get(ticket=ticket)
