@@ -407,6 +407,21 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
                     log.debug("Entry blocked: SHORT but last 2 bars closing up")
                     continue
 
+            # HTF Supply & Demand filter — only block near ACTIVE levels (>=2 touches)
+            if len(features) > 0:
+                last_f     = features.iloc[-1]
+                res_active = int(last_f.get("res_active", 0))
+                sup_active = int(last_f.get("sup_active", 0))
+                dist_res   = float(last_f.get("dist_htf_res", 1.0))
+                dist_sup   = float(last_f.get("dist_htf_sup", 1.0))
+                sr_buf     = cfg["model"].get("sr_proximity_pct", 0.0005)
+                if params.direction == 1 and res_active and dist_res < sr_buf:
+                    log.info("Entry blocked: LONG near active HTF resistance (dist=%.4f)", dist_res)
+                    continue
+                if params.direction == -1 and sup_active and dist_sup < sr_buf:
+                    log.info("Entry blocked: SHORT near active HTF support (dist=%.4f)", dist_sup)
+                    continue
+
             if paper:
                 if not paper_tracker.is_open:
                     paper_tracker.open(
