@@ -21,6 +21,9 @@ def build_features(df: pd.DataFrame,
     f = _volatility(f, df, window)
     f = _microstructure(f, df, window)
     f = _session(f, df)
+    f = _institutional_flow(f, df)
+    f = _structure(f, df)
+    f = _mobius_scalper(f, df)
     if htf_df is not None:
         f = _htf_context(f, df, htf_df)
 
@@ -219,6 +222,127 @@ def _htf_context(f: pd.DataFrame,
     # Reindex to LTF, forward-fill
     f["htf_trend"] = htf_trend.reindex(df.index, method="ffill")
     f["htf_atr"]   = htf_atr.reindex(df.index, method="ffill")
+
+    return f
+
+
+# ------------------------------------------------------------------ #
+#  Institutional flow (Follow The Money)                              #
+# ------------------------------------------------------------------ #
+
+def _institutional_flow(f: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
+    """
+    MFI, net flow histogram, institutional bar detection.
+    Derived from 'Follow The Money' TOS indicator system.
+    """
+    close  = df["close"]
+    high   = df["high"]
+    low    = df["low"]
+    volume = df["volume"]
+
+    # --- MFI (Money Flow Index) — true formula ---
+    typical   = (high + low + close) / 3
+    raw_flow  = typical * volume
+    pos_flow  = raw_flow.where(typical > typical.shift(1), 0.0)
+    neg_flow  = raw_flow.where(typical < typical.shift(1), 0.0)
+    sum_pos   = pos_flow.rolling(14).sum()
+    sum_neg   = neg_flow.rolling(14).sum()
+    ratio     = sum_pos / sum_neg.replace(0, np.nan)
+    f["mfi"]  = 100 - (100 / (1 + ratio))
+
+    # --- Net money flow histogram (aceleración del flujo) ---
+    avg_vol      = volume.rolling(20).mean().replace(0, np.nan)
+    net_flow     = (sum_pos - sum_neg) / avg_vol
+    signal_line  = net_flow.ewm(span=9, adjust=False).mean()
+    f["flow_hist"]       = net_flow - signal_line   # + = dinero entrando
+    f["flow_bull_cross"] = ((net_flow > signal_line) &
+                            (net_flow.shift(1) <= signal_line.shift(1))).astype(int)
+    f["flow_bear_cross"] = ((net_flow < signal_line) &
+                            (net_flow.shift(1) >= signal_line.shift(1))).astype(int)
+
+    # --- Institutional bar detection ---
+    bar_range = (high - low).replace(0, np.nan)
+    close_pct = (close - low) / bar_range
+    is_high_vol = volume >= avg_vol * 1.5
+    f["inst_bar"] = np.where(is_high_vol & (close_pct >= 0.6),  1,   # accumulation
+                    np.where(is_high_vol & (close_pct <= 0.4), -1,   # distribution
+                    0))
+
+    # --- VWAP binary (above = bullish institutional side) ---
+    typical_x_vol = typical * volume
+    vwap_cum = typical_x_vol.rolling(390, min_periods=1).sum() / \
+               volume.rolling(390, min_periods=1).sum()
+    f["above_vwap"] = (close > vwap_cum).astype(int)
+
+    return f
+
+
+# ------------------------------------------------------------------ #
+#  Market structure (Murrey Math + Kijun)                             #
+# ------------------------------------------------------------------ #
+
+def _structure(f: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Price position within daily range (Murrey Math) and Kijun-sen.
+    """
+    close = df["close"]
+    high  = df["high"]
+    low   = df["low"]
+
+    # --- Kijun-sen: midpoint of 26-bar range (Ichimoku baseline) ---
+    kijun          = (high.rolling(26).max() + low.rolling(26).min()) / 2
+    f["dist_kijun"] = (close - kijun) / kijun.replace(0, np.nan)
+
+    # --- Daily price position (approx session range via 390-bar rolling) ---
+    session_high   = high.rolling(390, min_periods=30).max()
+    session_low    = low.rolling(390, min_periods=30).min()
+    session_range  = (session_high - session_low).replace(0, np.nan)
+    f["price_pos_daily"] = (close - session_low) / session_range  # 0=bottom 1=top
+
+    # --- ATR daily context: how much of daily ATR has been consumed ---
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low  - close.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    daily_atr        = tr.rolling(390, min_periods=30).sum()
+    current_range    = session_high - session_low
+    f["atr_consumed"] = (current_range / daily_atr.replace(0, np.nan)).clip(0, 1)
+
+    return f
+
+
+# ------------------------------------------------------------------ #
+#  Mobius Scalper oscillator                                          #
+# ------------------------------------------------------------------ #
+
+def _mobius_scalper(f: pd.DataFrame, df: pd.DataFrame, n: int = 8) -> pd.DataFrame:
+    """
+    Adaptive momentum efficiency oscillator by Mobius.
+    R = EMA(b-b[1]) / EMA(|b-b[1]|)  where b is a power-adaptive smoother.
+    Scaled 0-100: >90 overbought (SHORT), <10 oversold (LONG).
+    Non-repainting — ideal for ML features.
+    """
+    close = df["close"].values
+    b = np.empty(len(close))
+    b[0] = close[0]
+    for i in range(1, len(close)):
+        ratio = close[i] / b[i-1] if b[i-1] != 0 else 1.0
+        b[i]  = b[i-1] + (close[i] - b[i-1]) / (n * (ratio ** 4))
+
+    b_series = pd.Series(b, index=df.index)
+    diff     = b_series - b_series.shift(1)
+    k        = 2 / (n + 1)
+    avg      = diff.ewm(alpha=k, adjust=False).mean()
+    abs_avg  = diff.abs().ewm(alpha=k, adjust=False).mean()
+    R        = avg / abs_avg.replace(0, np.nan)
+    r_osc    = (50 * (R + 1)).clip(0, 100)
+
+    f["r_osc"]          = r_osc
+    f["r_bull"]         = (r_osc > 50).astype(int)
+    # Crosses: oversold recovery (buy) and overbought exhaustion (sell)
+    f["r_cross_long"]   = ((r_osc > 10) & (r_osc.shift(1) <= 10)).astype(int)
+    f["r_cross_short"]  = ((r_osc < 90) & (r_osc.shift(1) >= 90)).astype(int)
 
     return f
 

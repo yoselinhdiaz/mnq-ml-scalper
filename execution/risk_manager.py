@@ -29,7 +29,8 @@ class RiskManager:
         self._blocked         = False
         self._open_tickets    = None
 
-        self._daily_limit = cfg["risk"].get("daily_loss_limit_usd", 120.0)
+        self._daily_limit  = cfg["risk"].get("daily_loss_limit_usd", 120.0)
+        self._daily_trades = 0
 
     def set_open_tickets(self, open_tickets: dict):
         self._open_tickets = open_tickets
@@ -93,7 +94,7 @@ class RiskManager:
         return params
 
     def record_trade_open(self):
-        pass  # open count is derived from open_tickets dict
+        self._daily_trades += 1
 
     def record_trade_close(self, pnl_usd: float):
         if pnl_usd < 0:
@@ -126,6 +127,9 @@ class RiskManager:
         from datetime import datetime, timezone
         if self._blocked:
             return "daily loss limit"
+        max_daily = self.cfg["risk"].get("max_trades_per_day", 999)
+        if self._daily_trades >= max_daily:
+            return f"max daily trades ({self._daily_trades})"
         open_count = len(self._open_tickets) if self._open_tickets is not None else 0
         if open_count >= self.cfg["risk"]["max_simultaneous_trades"]:
             return f"max trades ({open_count})"
@@ -159,8 +163,8 @@ class RiskManager:
         lots        = round(risk_usd / usd_per_lot, 2) if usd_per_lot > 0 else 0.01
         lots        = max(0.01, min(lots, 5.0))  # cap at 5 lots
 
-        # Dynamic TP: scale with ATR, clamped
-        tp_mult   = max(tp_min, min(tp_max, sl_mult * 1.5))
+        # TP uses tp_min directly (2.5x ATR) — wider target improves R:R
+        tp_mult   = tp_min
         tp_points = tp_mult * atr
 
         return TradeParams(
@@ -174,7 +178,8 @@ class RiskManager:
     def _reset_if_new_day(self):
         today = date.today()
         if today != self._today:
-            self._today      = today
-            self._daily_loss = 0.0
-            self._blocked    = False
+            self._today        = today
+            self._daily_loss   = 0.0
+            self._daily_trades = 0
+            self._blocked      = False
             log.info("New trading day — risk counters reset")

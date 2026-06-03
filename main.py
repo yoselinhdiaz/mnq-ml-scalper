@@ -157,45 +157,57 @@ class BreakevenMonitor:
             self._stop.wait(1)
 
     def _check(self):
-        min_profit  = self.cfg["risk"].get("breakeven_min_profit_usd", 25.0)
-        tick_value  = self.feed.get_tick_value()
-        point       = self.feed.get_point()
-        contract_sz = self.cfg["mt5"].get("contract_size", 1)
+        trail_lock_usd  = self.cfg["risk"].get("trail_lock_usd", 20.0)  # lock this much behind max profit
+        trigger_usd     = self.cfg["risk"].get("breakeven_min_profit_usd", 20.0)
+        tick_value      = self.feed.get_tick_value()
+        point           = self.feed.get_point()
+        contract_sz     = self.cfg["mt5"].get("contract_size", 1)
 
         if tick_value == 0 or point == 0:
             return
 
         for ticket, info in list(self.open_tickets.items()):
-            if info.get("be_done"):
-                continue
-
             pos_info = self.sender.get_position_info(ticket)
             if pos_info is None:
                 continue
 
-            spread_cost = info.get("spread_cost", 0.0)
-            trigger     = min_profit + spread_cost          # e.g. $25 + $2 = $27
-            profit      = pos_info["profit"]
-
-            if profit < trigger:
-                continue
-
-            # Move SL to entry + spread_cost in price pts (net breakeven after spread)
+            profit           = pos_info["profit"]
             direction        = info["direction"]
             entry            = pos_info["entry"]
             lots             = pos_info["lots"]
+            spread_cost      = info.get("spread_cost", 0.0)
             profit_per_point = lots * (tick_value / point) * contract_sz
-
             if profit_per_point == 0:
                 continue
 
-            lock_pts = spread_cost / profit_per_point       # pts to cover spread cost
-            new_sl   = round(entry + lock_pts * direction, 2)
+            # Only start trailing once profit reaches trigger
+            if profit < trigger_usd + spread_cost:
+                continue
 
-            if self.sender.modify_sl(ticket, new_sl):
-                info["be_done"] = True
-                log.info("B/E activated | ticket=%d | profit=%.2f >= trigger=%.2f | sl=%.2f (covers spread $%.2f)",
-                         ticket, profit, trigger, new_sl, spread_cost)
+            # Track max profit seen
+            max_profit = info.get("max_profit", profit)
+            if profit > max_profit:
+                info["max_profit"] = profit
+                max_profit = profit
+
+            # SL = price that locks in (max_profit - trail_lock_usd)
+            locked_profit = max(0.0, max_profit - trail_lock_usd)
+            lock_pts      = locked_profit / profit_per_point
+            new_sl        = round(entry + lock_pts * direction, 2)
+
+            # Only move SL forward (never backward)
+            import MetaTrader5 as _mt5
+            positions = _mt5.positions_get(ticket=ticket)
+            if not positions:
+                continue
+            current_sl = positions[0].sl
+            should_move = (direction == 1  and new_sl > current_sl + point) or \
+                          (direction == -1 and new_sl < current_sl - point)
+            if should_move:
+                if self.sender.modify_sl(ticket, new_sl):
+                    info["be_done"] = True
+                    log.info("Trail SL | ticket=%d | max_profit=%.2f | locked=%.2f | sl=%.2f",
+                             ticket, max_profit, locked_profit, new_sl)
 
 
 # ------------------------------------------------------------------ #
@@ -362,6 +374,18 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
             params = risk.evaluate(signal, prob, atr, chop_index, stable_trend)
             if params is None:
                 continue
+
+            # Bar momentum check: last 2 closes must support the direction
+            # Blocks entries against immediate price recovery/reversal
+            if len(df) >= 3:
+                last2_bullish = df["close"].iloc[-1] > df["close"].iloc[-2] > df["close"].iloc[-3]
+                last2_bearish = df["close"].iloc[-1] < df["close"].iloc[-2] < df["close"].iloc[-3]
+                if params.direction == 1 and last2_bearish:
+                    log.debug("Entry blocked: LONG but last 2 bars closing down")
+                    continue
+                if params.direction == -1 and last2_bullish:
+                    log.debug("Entry blocked: SHORT but last 2 bars closing up")
+                    continue
 
             if paper:
                 if not paper_tracker.is_open:
