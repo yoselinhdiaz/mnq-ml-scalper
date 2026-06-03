@@ -24,7 +24,6 @@ def build_features(df: pd.DataFrame,
     f = _institutional_flow(f, df)
     f = _structure(f, df)
     f = _mobius_scalper(f, df)
-    f = _htf_supply_demand(f, df)
     if htf_df is not None:
         f = _htf_context(f, df, htf_df)
 
@@ -344,68 +343,6 @@ def _mobius_scalper(f: pd.DataFrame, df: pd.DataFrame, n: int = 8) -> pd.DataFra
     # Crosses: oversold recovery (buy) and overbought exhaustion (sell)
     f["r_cross_long"]   = ((r_osc > 10) & (r_osc.shift(1) <= 10)).astype(int)
     f["r_cross_short"]  = ((r_osc < 90) & (r_osc.shift(1) >= 90)).astype(int)
-
-    return f
-
-
-# ------------------------------------------------------------------ #
-#  HTF Supply & Demand with Reactivity (TOS replica)                  #
-# ------------------------------------------------------------------ #
-
-def _htf_supply_demand(f: pd.DataFrame, df: pd.DataFrame,
-                       swing_bars: int = 600,
-                       react_pct: float = 0.0003,
-                       touch_window: int = 100,
-                       min_touches: int = 2) -> pd.DataFrame:
-    """
-    Replica el indicador 'HTF Supply & Demand' de TOS.
-    swing_bars=600 ≈ 10 horas en M1 (equivalente a 10 H1 pivots)
-    react_pct=0.03% de proximidad para contar un 'touch'
-    Solo marca nivel como activo si fue tocado >= min_touches veces.
-    """
-    close = df["close"]
-    high  = df["high"]
-    low   = df["low"]
-    idx   = df.index
-
-    # HTF Resistance y Support (rolling max/min — no repinta)
-    htf_res = high.rolling(swing_bars, min_periods=60).max()
-    htf_sup = low.rolling(swing_bars,  min_periods=60).min()
-
-    # Distancias al nivel (0 = en el nivel, > 0 = lejos)
-    f["dist_htf_res"] = (htf_res - close) / close.replace(0, np.nan)
-    f["dist_htf_sup"] = (close - htf_sup)  / close.replace(0, np.nan)
-
-    # Reactivity: cuántas veces el precio tocó cada nivel (últimos touch_window bars)
-    proximity   = react_pct * close
-    touched_res = ((high - htf_res).abs() <= proximity).astype(float)
-    touched_sup = ((low  - htf_sup).abs() <= proximity).astype(float)
-    f["res_touches"] = touched_res.rolling(touch_window, min_periods=1).sum()
-    f["sup_touches"] = touched_sup.rolling(touch_window, min_periods=1).sum()
-
-    # Nivel "activo" si fue tocado >= min_touches (igual que minTouches=2 del TOS)
-    f["res_active"]   = (f["res_touches"] >= min_touches).astype(int)
-    f["sup_active"]   = (f["sup_touches"] >= min_touches).astype(int)
-
-    # HTF Pressure: quién domina — +1 resistencia activa, -1 soporte activo, 0 balanced
-    f["htf_pressure"] = f["res_active"] - f["sup_active"]
-
-    # Prior Day High/Low (PDH/PDL) — niveles del día anterior
-    try:
-        daily_h = high.resample("D").max()
-        daily_l = low.resample("D").min()
-        pdh = daily_h.shift(1).reindex(idx, method="ffill")
-        pdl = daily_l.shift(1).reindex(idx, method="ffill")
-        f["dist_pdh"]  = (pdh - close) / close.replace(0, np.nan)  # + = bajo PDH
-        f["dist_pdl"]  = (close - pdl) / close.replace(0, np.nan)  # + = sobre PDL
-        f["above_pdh"] = (close > pdh).astype(int)   # breakout alcista
-        f["below_pdl"] = (close < pdl).astype(int)   # breakout bajista
-    except Exception:
-        # Si el índice no es DatetimeIndex compatible con resample, usar rolling
-        f["dist_pdh"]  = high.rolling(390, min_periods=30).max().shift(390) / close - 1
-        f["dist_pdl"]  = close / low.rolling(390, min_periods=30).min().shift(390) - 1
-        f["above_pdh"] = (f["dist_pdh"] < 0).astype(int)
-        f["below_pdl"] = (f["dist_pdl"] < 0).astype(int)
 
     return f
 
