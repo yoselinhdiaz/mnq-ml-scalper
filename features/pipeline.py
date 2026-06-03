@@ -395,15 +395,19 @@ def _htf_supply_demand(f: pd.DataFrame, df: pd.DataFrame,
         daily_l = low.resample("D").min()
         pdh = daily_h.shift(1).reindex(idx, method="ffill")
         pdl = daily_l.shift(1).reindex(idx, method="ffill")
+        if pdh.isna().all():
+            raise ValueError("no prior day data in window")
         f["dist_pdh"]  = (pdh - close) / close.replace(0, np.nan)
         f["dist_pdl"]  = (close - pdl) / close.replace(0, np.nan)
         f["above_pdh"] = (close > pdh).astype(int)
         f["below_pdl"] = (close < pdl).astype(int)
     except Exception:
-        f["dist_pdh"]  = high.rolling(390, min_periods=30).max().shift(390) / close - 1
-        f["dist_pdl"]  = close / low.rolling(390, min_periods=30).min().shift(390) - 1
-        f["above_pdh"] = (f["dist_pdh"] < 0).astype(int)
-        f["below_pdl"] = (f["dist_pdl"] < 0).astype(int)
+        pdh_roll = high.rolling(390, min_periods=30).max().shift(1)
+        pdl_roll = low.rolling(390, min_periods=30).min().shift(1)
+        f["dist_pdh"]  = (pdh_roll - close) / close.replace(0, np.nan)
+        f["dist_pdl"]  = (close - pdl_roll) / close.replace(0, np.nan)
+        f["above_pdh"] = (close > pdh_roll).astype(int)
+        f["below_pdl"] = (close < pdl_roll).astype(int)
 
     return f
 
