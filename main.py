@@ -395,6 +395,13 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
             if params is None:
                 continue
 
+            # Hard block: confirmed trend must agree with entry direction
+            if stable_trend != 0 and params.direction != stable_trend:
+                log.debug("Entry blocked: %s vs confirmed %s trend",
+                          "LONG" if params.direction == 1 else "SHORT",
+                          "BULLISH" if stable_trend == 1 else "BEARISH")
+                continue
+
             # Bar momentum check: last 2 closes must support the direction
             # Blocks entries against immediate price recovery/reversal
             if len(df) >= 3:
