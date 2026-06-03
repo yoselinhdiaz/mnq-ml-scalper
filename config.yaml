@@ -1,7 +1,7 @@
 mt5:
-  login: 202036 # Your MT5 account number
-  password: "@bcD1234#"
-  server: "GNTCapital-Demo"
+  login: 0       # Your MT5 account number
+  password: ""   # Your MT5 password
+  server: ""     # Your MT5 server name
   symbol: "US100." # or "MNQc1" depending on broker
   timeframe: "M1" # 1-minute bars
   htf_timeframe: "M5" # Higher timeframe context
@@ -17,6 +17,7 @@ data:
 model:
   device: auto                     # auto | cuda | cpu
   confidence_threshold: 0.38      # Min probability -- with trend
+  sr_proximity_pct: 0.0005        # Block entries within 0.05% of active HTF S/R (~15 pts)
   counter_trend_boost: 0.08       # Extra confidence going against trend (→ 0.48)
   flip_confidence_threshold: 0.52 # Min probability to flip direction
   chop_atr_ratio: 0.6 # ATR/range ratio — below = chop, skip
