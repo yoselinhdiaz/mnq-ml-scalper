@@ -37,7 +37,10 @@ function Ensure-MT5 {
 
 function Ensure-Bot {
     $botProcs = Get-Process "python" -ErrorAction SilentlyContinue | Where-Object {
-        (Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -match "main\.py"
+        try {
+            $wmi = Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)" -ErrorAction Stop
+            $wmi -and $wmi.CommandLine -match "main\.py"
+        } catch { $false }
     }
     if ($botProcs -and @($botProcs).Count -gt 1) {
         Write-Log "ADVERTENCIA: $(@($botProcs).Count) procesos bot detectados --matando duplicados..."

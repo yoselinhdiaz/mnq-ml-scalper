@@ -153,8 +153,26 @@ class BreakevenMonitor:
 
     def _loop(self):
         while not self._stop.is_set():
+            self._session_close()
             self._check()
             self._stop.wait(1)
+
+    def _session_close(self):
+        """Close all positions 30 seconds before session ends."""
+        sessions = self.cfg["risk"].get("allowed_sessions", [])
+        if not sessions or not self.open_tickets:
+            return
+        from datetime import datetime, timezone
+        now    = datetime.now(timezone.utc)
+        utc_h  = now.hour + now.minute / 60 + now.second / 3600
+        buffer = 30 / 3600  # 30 seconds
+        in_safe = any(s <= utc_h < e - buffer for s, e in sessions)
+        if not in_safe:
+            import logging
+            log = logging.getLogger(__name__)
+            log.info("Session ending -- closing all positions (30s rule)")
+            self.sender.close_all_positions()
+            self.open_tickets.clear()
 
     def _check(self):
         trail_lock_usd  = self.cfg["risk"].get("trail_lock_usd", 20.0)  # lock this much behind max profit
@@ -326,7 +344,7 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
             db.save_bar(bar_time, df["open"].iloc[-1], high, low, price, df["volume"].iloc[-1])
             db.save_signal(bar_time, price, signal, prob, atr, chop_index, feat_dict)
 
-            # Daily force-close at 4:59 PM ET (20:59 UTC) Mon-Fri
+            # Force-close all positions when session ends
             from datetime import datetime, timezone, date as dt_date
             now_utc    = datetime.now(timezone.utc)
             close_hour = cfg["risk"].get("daily_close_utc", 20)
@@ -335,12 +353,13 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
                 now_utc.hour == close_hour and
                 now_utc.minute >= 59 and
                 today not in daily_close_done):
-                log.info("Daily close 4:59 PM ET — closing all positions")
+                log.info("Daily close 4:59 PM ET -- closing all positions")
                 sender.close_all_positions()
                 for t in list(open_tickets.keys()):
                     del open_tickets[t]
                 daily_close_done.add(today)
                 risk._daily_trades = 0
+
 
             # Check paper SL/TP
             if paper and paper_tracker.is_open:
@@ -414,7 +433,36 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
                     log.debug("Entry blocked: SHORT but last 2 bars closing up")
                     continue
 
-            # HTF Supply & Demand filter — only block near ACTIVE levels (>=2 touches)
+            # Gate: exhaustion -- don't enter when price is at BB extreme or momentum overextended
+            if len(features) > 0:
+                last_f   = features.iloc[-1]
+                bb_pct_b = float(last_f.get("bb_pct_b", 0.5))
+                r_osc    = float(last_f.get("r_osc", 50))
+                if params.direction == 1 and bb_pct_b > 0.92:
+                    log.debug("Entry blocked: LONG at upper BB (bb_pct_b=%.2f)", bb_pct_b)
+                    continue
+                if params.direction == -1 and bb_pct_b < 0.08:
+                    log.debug("Entry blocked: SHORT at lower BB (bb_pct_b=%.2f)", bb_pct_b)
+                    continue
+                if params.direction == 1 and r_osc > 85:
+                    log.debug("Entry blocked: LONG momentum overbought (r_osc=%.1f)", r_osc)
+                    continue
+                if params.direction == -1 and r_osc < 15:
+                    log.debug("Entry blocked: SHORT momentum oversold (r_osc=%.1f)", r_osc)
+                    continue
+
+            # Gate: late entry -- don't enter after large move consumed daily range
+            if len(features) > 0:
+                atr_consumed   = float(last_f.get("atr_consumed", 0.0))
+                bar_size_ratio = float(last_f.get("bar_size_ratio", 1.0))
+                if atr_consumed > 0.75:
+                    log.debug("Entry blocked: daily range %.0f%% consumed", atr_consumed * 100)
+                    continue
+                if bar_size_ratio < 0.4:
+                    log.debug("Entry blocked: consolidation bar (bar_size_ratio=%.2f)", bar_size_ratio)
+                    continue
+
+            # HTF Supply & Demand filter -- only block near ACTIVE levels (>=2 touches)
             if len(features) > 0:
                 last_f     = features.iloc[-1]
                 res_active = int(last_f.get("res_active", 0))

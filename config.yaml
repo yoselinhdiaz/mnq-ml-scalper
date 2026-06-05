@@ -3,26 +3,27 @@ mt5:
   password: "@bcD1234#"
   server: "GNTCapital-Demo"
   symbol: "US100." # or "MNQc1" depending on broker
-  timeframe: "M1" # 1-minute bars
-  htf_timeframe: "M5" # Higher timeframe context
+  timeframe: "M5"  # 5-minute bars (9 months of history available)
+  htf_timeframe: "M15" # Higher timeframe context
   magic: 20250101 # Magic number for bot orders
   contract_size: 10 # Broker multiplier (not exposed via API, verified empirically)
 
 data:
-  lookback_bars: 500 # Bars to fetch on startup
+  lookback_bars: 2000 # Bars to fetch on startup (M5: ~7 days)
   feature_window: 30 # Rolling window for features
   retrain_interval_hours: 4 # How often to retrain model
   min_bars_to_trade: 100 # Min bars before first trade
 
 model:
   device: auto                     # auto | cuda | cpu
-  confidence_threshold: 0.38      # Min probability -- with trend
+  confidence_threshold: 0.45      # Min probability -- with trend
   sr_proximity_pct: 0.0005        # Block entries within 0.05% of active HTF S/R (~15 pts)
   counter_trend_boost: 0.25       # Extra confidence going against trend (→ 0.63)
   flip_confidence_threshold: 0.52 # Min probability to flip direction
   chop_atr_ratio: 0.6 # ATR/range ratio — below = chop, skip
-  label_lookahead: 6 # Bars ahead to compute labels for training
-  label_threshold_atr: 0.4 # TP hit = price moves > ATR * this (~7pts on US100)
+  label_lookahead: 15        # Bars ahead for trend-continuation labels (was 6)
+  label_momentum_bars: 5    # Bars of established momentum required before labeling
+  label_threshold_atr: 0.4  # Net move must exceed ATR * this over lookahead
 
 risk:
   risk_per_trade_usd: 30 # USD risked per trade
@@ -33,7 +34,7 @@ risk:
   trail_lock_usd: 20            # Trail SL $20 behind the maximum profit seen
   tp_atr_multiplier_min: 1.8
   tp_atr_multiplier_max: 3.0
-  allowed_sessions: [] # empty = 24h, or e.g. [[13,20]] for NYSE only
+  allowed_sessions: [[5, 19]] # 08:00-22:00 broker time (UTC+3) -- avoid overnight & dead hours
   daily_close_utc: 20  # Force close all positions at this UTC hour (20 = 4 PM ET)
 
 logging:

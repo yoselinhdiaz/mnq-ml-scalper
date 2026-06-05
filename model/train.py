@@ -40,9 +40,10 @@ def train(
       3. Final fit on all data
       4. Save model + scaler
     """
-    w = cfg["data"]["feature_window"]
+    w         = cfg["data"]["feature_window"]
     lookahead = cfg["model"]["label_lookahead"]
-    thresh = cfg["model"]["label_threshold_atr"]
+    thresh    = cfg["model"]["label_threshold_atr"]
+    mom_bars  = cfg["model"].get("label_momentum_bars", 5)
 
     # Use DB bars if df is None or DB has more data
     if db is not None and (df is None or db.bar_count() > len(df)):
@@ -52,6 +53,20 @@ def train(
 
     if df is None or len(df) == 0:
         raise RuntimeError("No bar data available for training")
+
+    # Filter to active trading sessions only (same hours the bot will trade)
+    sessions = cfg["risk"].get("allowed_sessions", [])
+    if sessions:
+        # DB timestamps are in broker time (UTC+3); allowed_sessions is UTC
+        # broker_hour = utc_hour + 3
+        utc_offset = 3
+        def in_session(ts):
+            broker_h = ts.hour
+            return any((s * 1.0 + utc_offset) % 24 <= broker_h < (e * 1.0 + utc_offset) % 24
+                       for s, e in sessions)
+        before = len(df)
+        df = df[df.index.to_series().apply(in_session)]
+        log.info("Session filter: kept %d / %d bars (08:00-22:00 broker time)", len(df), before)
 
     log.info("Building features from %d bars...", len(df))
     log.info("Date range: %s to %s", df.index[0], df.index[-1])
@@ -65,7 +80,7 @@ def train(
 
     # Compute labels only on rows that survived feature dropna
     df_clean = df.loc[features.index]
-    labels = make_labels(df_clean, lookahead=lookahead, threshold_atr=thresh)
+    labels = make_labels(df_clean, lookahead=lookahead, threshold_atr=thresh, momentum_bars=mom_bars)
 
     log.info(
         "Labels: LONG=%d SHORT=%d SKIP=%d",

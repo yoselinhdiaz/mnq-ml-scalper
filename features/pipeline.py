@@ -417,19 +417,28 @@ def _htf_supply_demand(f: pd.DataFrame, df: pd.DataFrame,
 # ------------------------------------------------------------------ #
 
 def make_labels(df: pd.DataFrame,
-                lookahead: int = 6,
-                threshold_atr: float = 0.4) -> pd.Series:
+                lookahead: int = 15,
+                threshold_atr: float = 0.4,
+                momentum_bars: int = 5) -> pd.Series:
     """
-    3-class labels — "first direction wins" (vectorized):
-      1 = LONG  — price hits +threshold before -threshold within lookahead bars
-     -1 = SHORT — price hits -threshold before +threshold
-      0 = SKIP  — tie (same bar) or neither hits threshold
-    Much less SKIP than the old max/min approach.
+    Trend-continuation labels.
+
+    LONG  = momentum already UP at T (last momentum_bars bars positive)
+            AND net close at T+lookahead is > threshold
+            AND >=60% of lookahead bars close above T's close
+
+    SHORT = same logic inverted
+
+    SKIP  = everything else
+
+    This prevents labeling entries at the END of trends: the model only
+    learns to enter when momentum is established AND continues sustainedly.
     """
     close = df["close"]
     high  = df["high"]
     low   = df["low"]
 
+    # ATR threshold
     tr = pd.concat([
         high - low,
         (high - close.shift(1)).abs(),
@@ -438,25 +447,33 @@ def make_labels(df: pd.DataFrame,
     atr    = tr.ewm(span=14, adjust=False).mean()
     thresh = threshold_atr * atr
 
-    # For each lookahead step k, check if threshold is hit in that bar
-    INF = lookahead + 1
-    first_up = pd.Series(INF, index=df.index)
-    first_dn = pd.Series(INF, index=df.index)
+    # Momentum at T: net price change over last N bars
+    momentum = close - close.shift(momentum_bars)
 
-    for k in range(1, lookahead + 1):
-        up_hit_k = high.shift(-k) >= close + thresh
-        dn_hit_k = low.shift(-k)  <= close - thresh
-        # Record the FIRST bar where each direction is hit
-        first_up = first_up.where(~up_hit_k | (first_up < k), k)
-        first_dn = first_dn.where(~dn_hit_k | (first_dn < k), k)
+    # Net move at lookahead
+    net_future = close.shift(-lookahead) - close
 
-    any_up = first_up < INF
-    any_dn = first_dn < INF
+    # Fraction of lookahead bars that close above/below T's close (vectorized)
+    close_vals = close.values
+    n = len(close_vals)
+    frac_above = np.zeros(n)
+    frac_below = np.zeros(n)
+
+    if n > lookahead:
+        windows   = np.lib.stride_tricks.sliding_window_view(close_vals, lookahead)
+        valid_n   = n - lookahead
+        base      = close_vals[:valid_n]
+        fut_wins  = windows[1:valid_n + 1]   # fut_wins[i] = close[i+1 : i+lookahead+1]
+        frac_above[:valid_n] = (fut_wins > base[:, np.newaxis]).mean(axis=1)
+        frac_below[:valid_n] = (fut_wins < base[:, np.newaxis]).mean(axis=1)
+
+    frac_above = pd.Series(frac_above, index=df.index)
+    frac_below = pd.Series(frac_below, index=df.index)
 
     labels = pd.Series(0, index=df.index, name="label")
-    labels[any_up & (~any_dn | (first_up < first_dn))] = 1   # up wins or only up
-    labels[any_dn & (~any_up | (first_dn < first_up))] = -1  # dn wins or only dn
-    # tie (first_up == first_dn) → stays 0 (SKIP)
+    labels[(momentum > 0) & (net_future > thresh)  & (frac_above >= 0.60)] = 1
+    labels[(momentum < 0) & (net_future < -thresh) & (frac_below >= 0.60)] = -1
+    labels.iloc[-lookahead:] = 0   # can't label last N bars
 
     return labels
 

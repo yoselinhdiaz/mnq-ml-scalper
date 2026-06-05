@@ -52,6 +52,7 @@ class RetrainScheduler:
             w         = self.cfg["data"]["feature_window"]
             lookahead = self.cfg["model"]["label_lookahead"]
             thresh    = self.cfg["model"]["label_threshold_atr"]
+            mom_bars  = self.cfg["model"].get("label_momentum_bars", 5)
             lookback  = self.cfg["data"]["lookback_bars"]
 
             # Prefer DB bars if we have enough accumulated
@@ -67,8 +68,17 @@ class RetrainScheduler:
                 log.warning("Retrain skipped - could not fetch bars")
                 return
 
+            # Filter to active sessions only
+            sessions = self.cfg["risk"].get("allowed_sessions", [])
+            if sessions:
+                utc_offset = 3
+                df = df[df.index.to_series().apply(
+                    lambda ts: any((s + utc_offset) % 24 <= ts.hour < (e + utc_offset) % 24
+                                   for s, e in sessions)
+                )]
+
             features = build_features(df, None, window=w)
-            labels   = make_labels(df, lookahead=lookahead, threshold_atr=thresh)
+            labels   = make_labels(df, lookahead=lookahead, threshold_atr=thresh, momentum_bars=mom_bars)
 
             common = features.index.intersection(labels.index)
             X = features.loc[common].values
