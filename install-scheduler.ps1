@@ -16,15 +16,17 @@ $SCRIPT    = "$BOT_DIR\run.ps1"
 $PS_EXE    = "powershell.exe"
 $PS_ARGS   = "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$SCRIPT`""
 
-# --- Tarea START: cada domingo a las 5:30 PM ---
+# --- Tarea START: repetir cada 5 minutos; run.ps1 aplica el horario operativo ---
 $triggerStart = New-ScheduledTaskTrigger `
-    -Weekly -DaysOfWeek Sunday -At "17:30"
+    -Once -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5) `
+    -RepetitionDuration ([TimeSpan]::MaxValue)
 
 $actionStart = New-ScheduledTaskAction `
     -Execute $PS_EXE -Argument $PS_ARGS -WorkingDirectory $BOT_DIR
 
 $settingsStart = New-ScheduledTaskSettingsSet `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 120) `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
     -RestartCount 3 `
     -RestartInterval (New-TimeSpan -Minutes 5) `
     -StartWhenAvailable
@@ -36,7 +38,7 @@ Register-ScheduledTask `
     -Settings   $settingsStart `
     -RunLevel   Highest `
     -Force `
-    -Description "Inicia MT5 + bot US100 cada domingo 5:30 PM"
+    -Description "Valida MT5 + bot US100 cada 5 minutos; run.ps1 aplica el horario operativo"
 
 Write-Host "Tarea MNQ-Bot-Start registrada"
 

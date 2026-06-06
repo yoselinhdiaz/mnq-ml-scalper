@@ -66,13 +66,15 @@ class OrderSender:
             code = result.retcode if result else "None"
             log.error("order_send failed — retcode: %s | comment: %s",
                       code, result.comment if result else "")
-            return None
+            return None, None
 
-        log.info("Order opened | ticket=%d | %s | lots=%.2f | entry=%.2f | sl=%.2f | tp=%.2f",
+        # Use actual MT5 fill price, fallback to requested price if not available
+        fill_price = result.price if result.price else price
+        log.info("Order opened | ticket=%d | %s | lots=%.2f | fill=%.2f | sl=%.2f | tp=%.2f",
                  result.order,
                  "LONG" if params.direction == 1 else "SHORT",
-                 params.lots, price, sl, tp)
-        return result.order
+                 params.lots, fill_price, sl, tp)
+        return result.order, fill_price
 
     # ------------------------------------------------------------------ #
     #  Close position                                                      #

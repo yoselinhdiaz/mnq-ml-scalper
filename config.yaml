@@ -37,6 +37,12 @@ risk:
   allowed_sessions: [[5, 19]] # 08:00-22:00 broker time (UTC+3) -- avoid overnight & dead hours
   daily_close_utc: 20  # Force close all positions at this UTC hour (20 = 4 PM ET)
 
+news:
+  enabled: true
+  pre_news_minutes: 10    # alerta roja X min antes del evento
+  post_news_minutes: 15   # alerta roja X min después del evento
+  impact_filter: "High"   # High | Medium
+
 logging:
   log_file: "logs/trades.log"
   model_metrics_file: "logs/model_metrics.log"

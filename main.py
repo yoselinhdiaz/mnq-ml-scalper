@@ -229,6 +229,72 @@ class BreakevenMonitor:
 
 
 # ------------------------------------------------------------------ #
+#  MT5 reconciliation                                                  #
+# ------------------------------------------------------------------ #
+
+def _reconcile_with_mt5(db, cfg: dict):
+    """
+    Sync scalper.db with actual MT5 deal history.
+    Corrects entry/exit prices and PnL for all live trades that have a ticket.
+    Also inserts any MT5 deals for this magic number not yet in the DB.
+    """
+    import MetaTrader5 as _mt5
+    from datetime import datetime, timezone, timedelta
+
+    magic       = cfg["mt5"]["magic"]
+    symbol      = cfg["mt5"]["symbol"]
+    since       = datetime.now(timezone.utc) - timedelta(days=30)
+    deals       = _mt5.history_deals_get(since, datetime.now(timezone.utc))
+    if not deals:
+        return
+
+    # Group deals by position ticket
+    by_position: dict = {}
+    for d in deals:
+        if d.magic != magic or d.symbol != symbol:
+            continue
+        by_position.setdefault(d.position_id, []).append(d)
+
+    known_tickets = db.get_live_tickets()
+    updated = inserted = 0
+
+    for pos_id, pos_deals in by_position.items():
+        pos_deals.sort(key=lambda d: d.time)
+        open_deal  = next((d for d in pos_deals if d.entry == 0), None)
+        close_deal = next((d for d in pos_deals if d.entry == 1), None)
+        if not close_deal:
+            continue  # position still open
+
+        entry_price = open_deal.price  if open_deal  else 0.0
+        exit_price  = close_deal.price
+        pnl         = sum(d.profit for d in pos_deals)
+        open_time   = str(datetime.fromtimestamp(open_deal.time))  if open_deal  else ""
+        close_time  = str(datetime.fromtimestamp(close_deal.time))
+        lots        = close_deal.volume
+        reason      = "TP" if close_deal.reason == 3 else \
+                      "SL" if close_deal.reason == 4 else "MT5"
+        direction   = "LONG" if (open_deal and open_deal.type == 0) else "SHORT"
+
+        if pos_id in known_tickets:
+            rows = db.reconcile_trade(pos_id, entry_price, exit_price,
+                                      pnl, open_time, close_time, lots, reason)
+            if rows:
+                updated += 1
+        else:
+            # Deal executed outside current bot session — insert it
+            db.save_trade(
+                open_time=open_time, close_time=close_time,
+                direction=direction, entry=entry_price, exit=exit_price,
+                sl=0.0, tp=0.0, lots=lots, pnl=pnl,
+                reason=reason, paper=False, ticket=pos_id,
+            )
+            inserted += 1
+
+    if updated or inserted:
+        log.info("MT5 reconcile: %d updated, %d inserted", updated, inserted)
+
+
+# ------------------------------------------------------------------ #
 #  Main loop                                                           #
 # ------------------------------------------------------------------ #
 
@@ -282,8 +348,10 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
 
     open_tickets: dict = {}
     risk.set_open_tickets(open_tickets)
-    mtf_history:  list = []
-    daily_close_done: set = set()  # tracks dates where daily close was executed
+    mtf_history:       list  = []
+    daily_close_done:  set   = set()  # tracks dates where daily close was executed
+    last_reconcile:    float = 0.0    # timestamp of last MT5 reconciliation
+    RECONCILE_EVERY          = 3600   # reconcile every 60 min
     MTF_CONFIRM  = 3         # bars the trend must hold before allowing entry
 
     # Re-load any positions already open in MT5 (e.g. after restart)
@@ -371,29 +439,52 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
                 closed = [t for t in open_tickets if t not in open_pos_tickets]
                 for t in closed:
                     info = open_tickets[t]
-                    # Recover PnL from MT5 deal history
+                    # Recover real prices and PnL from MT5 deal history
                     import MetaTrader5 as _mt5
                     deals = _mt5.history_deals_get(position=t)
+                    if deals:
+                        open_deal  = next((d for d in deals if d.entry == 0), None)  # DEAL_ENTRY_IN
+                        close_deal = next((d for d in deals if d.entry == 1), None)  # DEAL_ENTRY_OUT
+                        entry_price = open_deal.price  if open_deal  else info["entry"]
+                        exit_price  = close_deal.price if close_deal else 0.0
+                        open_time   = str(datetime.fromtimestamp(open_deal.time))  if open_deal  else str(info.get("open_time", bar_time))
+                        close_time  = str(datetime.fromtimestamp(close_deal.time)) if close_deal else bar_time
+                        lots        = close_deal.volume if close_deal else info.get("lots", 0.0)
+                        reason      = "TP" if (close_deal and close_deal.reason == 3) else \
+                                      "SL" if (close_deal and close_deal.reason == 4) else "MT5"
+                    else:
+                        entry_price = info["entry"]
+                        exit_price  = 0.0
+                        open_time   = str(info.get("open_time", bar_time))
+                        close_time  = bar_time
+                        lots        = info.get("lots", 0.0)
+                        reason      = "MT5"
                     pnl = sum(d.profit for d in deals) if deals else 0.0
-                    exit_price = deals[-1].price if deals else 0.0
                     risk.record_trade_close(pnl)
                     db.save_trade(
-                        open_time  = str(info.get("open_time", bar_time)),
-                        close_time = bar_time,
+                        open_time  = open_time,
+                        close_time = close_time,
                         direction  = "LONG" if info["direction"] == 1 else "SHORT",
-                        entry      = info["entry"],
+                        entry      = entry_price,
                         exit       = exit_price,
                         sl         = 0.0,
                         tp         = 0.0,
-                        lots       = info.get("lots", 0.0),
+                        lots       = lots,
                         pnl        = pnl,
-                        reason     = "MT5",
+                        reason     = reason,
                         paper      = False,
+                        ticket     = t,
                     )
-                    log.info("Trade closed | ticket=%d | pnl=%.2f", t, pnl)
+                    log.info("Trade closed | ticket=%d | entry=%.2f | exit=%.2f | pnl=%.2f | reason=%s",
+                             t, entry_price, exit_price, pnl, reason)
                     del open_tickets[t]
 
             sw.on_bar(bar_time, price, signal, prob, atr, chop_index, paper)
+
+            # Periodic reconciliation with MT5 deal history
+            if not paper and (time.time() - last_reconcile) >= RECONCILE_EVERY:
+                _reconcile_with_mt5(db, cfg)
+                last_reconcile = time.time()
 
             mtf_trend = feed.get_mtf_trend()
             mtf_history.append(mtf_trend)
@@ -506,7 +597,7 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
                                   prob, flip_threshold)
                         continue
 
-                ticket = sender.open_position(params)
+                ticket, fill_price = sender.open_position(params)
                 if ticket:
                     # Spread cost in USD: spread_pts (in ticks) × tick_value × lots × contract_size
                     spread_pts   = feed.get_spread_points()   # in ticks (e.g. 280 ticks)
@@ -516,7 +607,7 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
 
                     open_tickets[ticket] = {
                         "direction":   params.direction,
-                        "entry":       price,
+                        "entry":       fill_price or price,   # real MT5 fill price
                         "atr":         atr,
                         "lots":        params.lots,
                         "open_time":   bar_time,

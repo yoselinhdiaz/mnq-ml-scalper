@@ -63,13 +63,21 @@ class Database:
             tp          REAL,
             lots        REAL,
             pnl         REAL,
-            reason      TEXT,      -- TP | SL | MANUAL
-            paper       INTEGER    -- 1 = paper, 0 = live
+            reason      TEXT,      -- TP | SL | MANUAL | MT5
+            paper       INTEGER,   -- 1 = paper, 0 = live
+            ticket      INTEGER    -- MT5 position ticket for reconciliation
         );
 
         CREATE INDEX IF NOT EXISTS idx_signals_time ON signals(time);
         CREATE INDEX IF NOT EXISTS idx_trades_open  ON trades(open_time);
+        CREATE INDEX IF NOT EXISTS idx_trades_ticket ON trades(ticket);
         """)
+        # Migration: add ticket column if DB already exists without it
+        try:
+            self._conn.execute("ALTER TABLE trades ADD COLUMN ticket INTEGER")
+            self._conn.commit()
+        except Exception:
+            pass  # column already exists
         self._conn.commit()
 
     # ------------------------------------------------------------------ #
@@ -128,15 +136,37 @@ class Database:
     def save_trade(self, open_time: str, close_time: str,
                    direction: str, entry: float, exit: float,
                    sl: float, tp: float, lots: float,
-                   pnl: float, reason: str, paper: bool = True):
+                   pnl: float, reason: str, paper: bool = True,
+                   ticket: int = None):
         self._conn.execute("""
             INSERT INTO trades
                 (open_time, close_time, direction, entry, exit,
-                 sl, tp, lots, pnl, reason, paper)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 sl, tp, lots, pnl, reason, paper, ticket)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (open_time, close_time, direction, entry, exit,
-              sl, tp, lots, pnl, reason, int(paper)))
+              sl, tp, lots, pnl, reason, int(paper), ticket))
         self._conn.commit()
+
+    def reconcile_trade(self, ticket: int, entry: float, exit: float,
+                        pnl: float, open_time: str, close_time: str,
+                        lots: float, reason: str):
+        """Update an existing trade record with real MT5 fill prices."""
+        self._conn.execute("""
+            UPDATE trades SET entry=?, exit=?, pnl=?, open_time=?,
+                              close_time=?, lots=?, reason=?
+            WHERE ticket=? AND paper=0
+        """, (entry, exit, pnl, open_time, close_time, lots, reason, ticket))
+        self._conn.commit()
+        return self._conn.execute(
+            "SELECT changes()"
+        ).fetchone()[0]
+
+    def get_live_tickets(self) -> set:
+        """Return all MT5 ticket IDs already in the DB."""
+        rows = self._conn.execute(
+            "SELECT ticket FROM trades WHERE paper=0 AND ticket IS NOT NULL"
+        ).fetchall()
+        return {r[0] for r in rows}
 
     # ------------------------------------------------------------------ #
     #  Queries for retraining                                              #

@@ -1,6 +1,7 @@
 # run.ps1 --US100 ML Scalper Watchdog
 # Inicia domingo 5:30 PM, se detiene viernes 5:30 PM (hora local)
-# Monitorea MT5 y el bot cada 60 segundos y los reinicia si caen
+# Ejecutado por Windows Task Scheduler cada 5 minutos.
+# Valida horario, evita duplicados y asegura MT5 + bot.
 
 $BOT_DIR  = "C:\source\repos\mnq-ml-scalper"
 $PYTHON   = "python"
@@ -15,12 +16,44 @@ function Write-Log($msg) {
     Write-Host $line
 }
 
-function Should-Stop {
+function In-Trading-Window {
     $now = Get-Date
     $dow = [int]$now.DayOfWeek   # 0=Sun 1=Mon ... 5=Fri 6=Sat
     $hm  = $now.Hour * 60 + $now.Minute
-    $stop_hm = 17 * 60 + 30     # 5:30 PM
-    return ($dow -eq 5 -and $hm -ge $stop_hm) -or ($dow -eq 6)
+    $cutoff_hm = 17 * 60 + 30   # 5:30 PM
+
+    if ($dow -eq 6) { return $false }                       # Saturday: closed
+    if ($dow -eq 0 -and $hm -lt $cutoff_hm) { return $false } # Sunday before open
+    if ($dow -eq 5 -and $hm -ge $cutoff_hm) { return $false } # Friday after close
+    return $true
+}
+
+function Should-Force-Stop {
+    $now = Get-Date
+    $dow = [int]$now.DayOfWeek
+    $hm  = $now.Hour * 60 + $now.Minute
+    $cutoff_hm = 17 * 60 + 30
+
+    return ($dow -eq 5 -and $hm -ge $cutoff_hm) -or ($dow -eq 6)
+}
+
+function Get-RunWatchdogs {
+    Get-Process "powershell" -ErrorAction SilentlyContinue | Where-Object {
+        if ($_.Id -eq $PID) { return $false }
+        try {
+            $wmi = Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)" -ErrorAction Stop
+            $wmi -and $wmi.CommandLine -match "run\.ps1"
+        } catch { $false }
+    }
+}
+
+function Get-BotProcesses {
+    Get-Process "python" -ErrorAction SilentlyContinue | Where-Object {
+        try {
+            $wmi = Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)" -ErrorAction Stop
+            $wmi -and $wmi.CommandLine -match "main\.py"
+        } catch { $false }
+    }
 }
 
 function Ensure-MT5 {
@@ -36,12 +69,7 @@ function Ensure-MT5 {
 }
 
 function Ensure-Bot {
-    $botProcs = Get-Process "python" -ErrorAction SilentlyContinue | Where-Object {
-        try {
-            $wmi = Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)" -ErrorAction Stop
-            $wmi -and $wmi.CommandLine -match "main\.py"
-        } catch { $false }
-    }
+    $botProcs = Get-BotProcesses
     if ($botProcs -and @($botProcs).Count -gt 1) {
         Write-Log "ADVERTENCIA: $(@($botProcs).Count) procesos bot detectados --matando duplicados..."
         $botProcs | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -58,30 +86,31 @@ function Ensure-Bot {
 
 function Stop-All {
     Write-Log "Deteniendo bot y MT5..."
-    Get-Process "python"     -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-BotProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
     Get-Process "terminal64" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Write-Log "Todo detenido"
 }
 
 # ---------------------------------------------------------------
-Write-Log "===== Watchdog iniciado ====="
+$otherWatchdogs = Get-RunWatchdogs
+if ($otherWatchdogs) {
+    Write-Log "Otro run.ps1 ya esta corriendo (PID: $($otherWatchdogs.Id -join ', ')) --saliendo"
+    exit 0
+}
 
-# Primer arranque
+Write-Log "===== Watchdog check iniciado ====="
+
+if (-not (In-Trading-Window)) {
+    Write-Log "Fuera de horario operativo"
+    if (Should-Force-Stop) {
+        Stop-All
+    }
+    Write-Log "===== Watchdog check finalizado ====="
+    exit 0
+}
+
 $mt5_new = Ensure-MT5
 if ($mt5_new) { Start-Sleep -Seconds 10 }
 Ensure-Bot
 
-# Loop principal --verifica cada 60 segundos
-while ($true) {
-    Start-Sleep -Seconds 60
-
-    if (Should-Stop) {
-        Write-Log "Hora de parada (viernes 5:30 PM)"
-        Stop-All
-        Write-Log "===== Watchdog finalizado ====="
-        exit 0
-    }
-
-    Ensure-MT5
-    Ensure-Bot
-}
+Write-Log "===== Watchdog check finalizado ====="
