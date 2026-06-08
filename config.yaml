@@ -31,8 +31,8 @@ risk:
   daily_loss_limit_pct: 0.10 # Stop trading if daily loss >= 10% of account balance
   sl_atr_multiplier: 0.8
   consecutive_sl_limit: 2    # Block direction after N consecutive SL losses
-  sl_cooldown_minutes: 5    # Minutes to block after hitting consecutive_sl_limit
-  breakeven_min_profit_usd: 20  # Start trailing when profit reaches this USD
+  sl_cooldown_minutes: 10   # Minutes to block after hitting consecutive_sl_limit
+  breakeven_min_profit_usd: 999 # Trailing desactivado -- dejar que TP/SL de MT5 trabajen solos
   trail_lock_usd: 20            # Trail SL $20 behind the maximum profit seen
   tp_rr_ratio: 2.0             # TP = SL x 2.0  (1:2 R/R)
   tp_atr_multiplier_min: 1.8
