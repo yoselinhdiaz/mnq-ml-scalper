@@ -460,7 +460,7 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
                         lots        = info.get("lots", 0.0)
                         reason      = "MT5"
                     pnl = sum(d.profit for d in deals) if deals else 0.0
-                    risk.record_trade_close(pnl)
+                    risk.record_trade_close(pnl, direction=info["direction"], reason=reason)
                     db.save_trade(
                         open_time  = open_time,
                         close_time = close_time,
@@ -568,6 +568,34 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
                     log.info("Entry blocked: SHORT near active HTF support (dist=%.4f)", dist_sup)
                     continue
 
+            # EMA5/21 alignment filter
+            if len(features) > 0:
+                ema5_above = int(features.iloc[-1].get("ema5_above21", 0))
+                if params.direction == 1 and ema5_above == 0:
+                    log.debug("Entry blocked: LONG but EMA5 below EMA21")
+                    continue
+                if params.direction == -1 and ema5_above == 1:
+                    log.debug("Entry blocked: SHORT but EMA5 above EMA21")
+                    continue
+
+            # Pullback filter: price must have touched EMA21 or VWAP in last 3 bars
+            if len(features) > 0:
+                pb_ema  = int(features.iloc[-1].get("pullback_ema21", 0))
+                pb_vwap = int(features.iloc[-1].get("pullback_vwap", 0))
+                if not (pb_ema or pb_vwap):
+                    log.debug("Entry blocked: no pullback to EMA21 or VWAP in last 3 bars")
+                    continue
+
+            # RSI7 exhaustion filter
+            if len(features) > 0:
+                rsi7 = float(features.iloc[-1].get("rsi_7", 50))
+                if params.direction == 1 and rsi7 > 75:
+                    log.debug("Entry blocked: LONG with RSI7 overbought (%.1f)", rsi7)
+                    continue
+                if params.direction == -1 and rsi7 < 25:
+                    log.debug("Entry blocked: SHORT with RSI7 oversold (%.1f)", rsi7)
+                    continue
+
             if paper:
                 if not paper_tracker.is_open:
                     paper_tracker.open(
@@ -587,7 +615,8 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
                         # High confidence: close opposite and flip
                         for t in conflicting:
                             pnl = sender.close_position(t) or 0.0
-                            risk.record_trade_close(pnl)
+                            flip_dir = open_tickets[t].get("direction", 0)
+                            risk.record_trade_close(pnl, direction=flip_dir, reason="FLIP")
                             del open_tickets[t]
                             log.info("Momentum flip: closed %s ticket=%d pnl=%.2f",
                                      "LONG" if -params.direction == 1 else "SHORT", t, pnl)

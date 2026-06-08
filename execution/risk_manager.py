@@ -32,6 +32,10 @@ class RiskManager:
         self._daily_limit  = cfg["risk"].get("daily_loss_limit_usd", 120.0)
         self._daily_trades = 0
 
+        # Consecutive SL blocker — per direction
+        self._sl_streak:      dict = {1: 0, -1: 0}   # consecutive SL hits per direction
+        self._sl_block_until: dict = {1: None, -1: None}  # datetime when unblocked
+
     def set_open_tickets(self, open_tickets: dict):
         self._open_tickets = open_tickets
 
@@ -81,6 +85,20 @@ class RiskManager:
                       "with" if signal == mtf_trend else "counter")
             return None
 
+        # Consecutive SL cooldown check
+        sl_block = self._sl_block_until.get(signal)
+        if sl_block is not None:
+            from datetime import datetime, timezone
+            if datetime.now(timezone.utc) < sl_block:
+                remaining = int((sl_block - datetime.now(timezone.utc)).total_seconds() / 60)
+                log.debug("Trade blocked: SL cooldown %s (%d min left)",
+                          "LONG" if signal == 1 else "SHORT", remaining)
+                return None
+            else:
+                # Cooldown expired — reset
+                self._sl_block_until[signal] = None
+                self._sl_streak[signal] = 0
+
         reason = self._check_filters(probability, chop_index)
         if reason:
             log.debug("Trade blocked: %s", reason)
@@ -96,16 +114,33 @@ class RiskManager:
     def record_trade_open(self):
         self._daily_trades += 1
 
-    def record_trade_close(self, pnl_usd: float):
+    def record_trade_close(self, pnl_usd: float, direction: int = 0, reason: str = ""):
         if pnl_usd < 0:
             self._daily_loss += abs(pnl_usd)
             log.info("Daily loss updated: -$%.2f (total: $%.2f / $%.2f)",
-                     abs(pnl_usd),
-                     self._daily_loss,
-                     self._daily_limit)
+                     abs(pnl_usd), self._daily_loss, self._daily_limit)
             if self._daily_loss >= self._daily_limit:
                 self._blocked = True
                 log.warning("DAILY LOSS LIMIT HIT ($%.2f) — trading blocked for today", self._daily_limit)
+
+        # Consecutive SL tracker
+        if direction != 0:
+            sl_limit   = self.cfg["risk"].get("consecutive_sl_limit", 2)
+            cooldown_m = self.cfg["risk"].get("sl_cooldown_minutes", 30)
+            is_sl_hit  = pnl_usd < 0  # any loss counts (SL or trailing SL)
+            if is_sl_hit:
+                self._sl_streak[direction] = self._sl_streak.get(direction, 0) + 1
+                if self._sl_streak[direction] >= sl_limit:
+                    from datetime import datetime, timezone, timedelta
+                    unblock = datetime.now(timezone.utc) + timedelta(minutes=cooldown_m)
+                    self._sl_block_until[direction] = unblock
+                    dir_name = "LONG" if direction == 1 else "SHORT"
+                    log.warning("SL blocker: %d consecutive losses %s — blocked for %d min until %s",
+                                self._sl_streak[direction], dir_name, cooldown_m,
+                                unblock.strftime("%H:%M UTC"))
+            else:
+                # Winning trade resets streak for that direction
+                self._sl_streak[direction] = 0
 
     @property
     def is_blocked(self) -> bool:
@@ -163,8 +198,8 @@ class RiskManager:
         lots        = round(risk_usd / usd_per_lot, 2) if usd_per_lot > 0 else 0.01
         lots        = max(0.01, min(lots, 5.0))  # cap at 5 lots
 
-        # No TP — trailing stop manages exits, TP only caps winners
-        tp_points = 0.0
+        tp_ratio  = self.cfg["risk"].get("tp_rr_ratio", 2.0)
+        tp_points = sl_points * tp_ratio
 
         return TradeParams(
             direction=direction,

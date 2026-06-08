@@ -70,7 +70,6 @@ class Database:
 
         CREATE INDEX IF NOT EXISTS idx_signals_time ON signals(time);
         CREATE INDEX IF NOT EXISTS idx_trades_open  ON trades(open_time);
-        CREATE INDEX IF NOT EXISTS idx_trades_ticket ON trades(ticket);
         """)
         # Migration: add ticket column if DB already exists without it
         try:
@@ -78,7 +77,14 @@ class Database:
             self._conn.commit()
         except Exception:
             pass  # column already exists
-        self._conn.commit()
+        # Create ticket index after migration (column guaranteed to exist now)
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trades_ticket ON trades(ticket)"
+            )
+            self._conn.commit()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     #  Bar storage                                                         #

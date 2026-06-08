@@ -82,6 +82,16 @@ def _momentum(f: pd.DataFrame, df: pd.DataFrame, w: int) -> pd.DataFrame:
     bar_size = high - low
     f["bar_size_ratio"] = bar_size / bar_size.rolling(10).mean().replace(0, np.nan)
 
+    # EMA 5 — faster trend confirmation
+    ema5  = close.ewm(span=5,  adjust=False).mean()
+    ema21 = close.ewm(span=21, adjust=False).mean()
+    f["ema5_slope"]   = ema5.diff(2) / (close * 0.0001)
+    f["ema5_above21"] = (ema5 > ema21).astype(int)
+    f["dist_ema5"]    = (close - ema5) / ema5
+
+    # RSI 7 — faster exhaustion detection for pullback entries
+    f["rsi_7"] = _rsi(close, 7)
+
     # ADX — trend strength (14 period)
     f["adx"] = _adx(high, low, close, 14)
 
@@ -166,6 +176,17 @@ def _microstructure(f: pd.DataFrame, df: pd.DataFrame, w: int) -> pd.DataFrame:
     body_bottom = pd.concat([close, df["open"]], axis=1).min(axis=1)
     f["upper_wick"] = (high - body_top)   / range_bar
     f["lower_wick"] = (body_bottom - low) / range_bar
+
+    # Pullback: price touched EMA21 or VWAP in last 3 bars
+    ema21_ms = close.ewm(span=21, adjust=False).mean()
+    vwap_ms  = (close * volume).rolling(30).sum() / volume.rolling(30).sum()
+    f["pullback_ema21"] = (low.rolling(3).min() <= ema21_ms).astype(int)
+    f["pullback_vwap"]  = (
+        (low.rolling(3).min() <= vwap_ms) & (high.rolling(3).max() >= vwap_ms)
+    ).astype(int)
+    f["near_ema21"] = (
+        (close - ema21_ms).abs() / ema21_ms < 0.001
+    ).astype(int)
 
     return f
 

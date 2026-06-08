@@ -1,6 +1,6 @@
 mt5:
-  login: 202036 # Your MT5 account number
-  password: "@bcD1234#"
+  login: 202233 # Your MT5 account number
+  password: "hL15058!"
   server: "GNTCapital-Demo"
   symbol: "US100." # or "MNQc1" depending on broker
   timeframe: "M5"  # 5-minute bars (9 months of history available)
@@ -27,14 +27,17 @@ model:
 
 risk:
   risk_per_trade_usd: 30 # USD risked per trade
-  max_simultaneous_trades: 2
+  max_simultaneous_trades: 1
   daily_loss_limit_pct: 0.10 # Stop trading if daily loss >= 10% of account balance
   sl_atr_multiplier: 0.8
+  consecutive_sl_limit: 2    # Block direction after N consecutive SL losses
+  sl_cooldown_minutes: 5    # Minutes to block after hitting consecutive_sl_limit
   breakeven_min_profit_usd: 20  # Start trailing when profit reaches this USD
   trail_lock_usd: 20            # Trail SL $20 behind the maximum profit seen
+  tp_rr_ratio: 2.0             # TP = SL x 2.0  (1:2 R/R)
   tp_atr_multiplier_min: 1.8
   tp_atr_multiplier_max: 3.0
-  allowed_sessions: [[5, 19]] # 08:00-22:00 broker time (UTC+3) -- avoid overnight & dead hours
+  allowed_sessions: []  # sin restriccion de sesion -- opera las 24h
   daily_close_utc: 20  # Force close all positions at this UTC hour (20 = 4 PM ET)
 
 news:

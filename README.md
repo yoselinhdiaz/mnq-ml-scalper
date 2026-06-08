@@ -134,12 +134,13 @@ Nombre, email, zona horaria y notas — guardado en `logs/profile.json`.
 
 | Grupo | Features |
 |---|---|
-| Momentum | RSI-14, MACD (12/26/9), ROC-10, r_osc (oscilador rápido), Fisher Transform |
+| Momentum | RSI-14, RSI-7, MACD (12/26/9), ROC-10, r_osc (oscilador rápido), EMA 5/9/21/50 alignment |
+| EMA Pullback | ema5_above21, ema5_slope, dist_ema5, pullback_ema21, pullback_vwap, near_ema21 |
 | Volatilidad | ATR-14, BB %b, BB ancho, chop_index, atr_consumed (% rango diario consumido) |
 | Microestructura | VWAP deviation, vol_delta (diferencia volumen alza/baja), body_ratio, bar_size_ratio |
 | Sesión | hora sin/cos, flags NYSE (09:30-16:00 ET), London (08:00-16:30 GMT) |
-| Flujo institucional | OBV ratio, CMF-20, volume_zscore |
-| Estructura de precio | HH/LL count, swing_strength, distance desde mínimos/máximos |
+| Flujo institucional | MFI-14, net flow histogram, institutional bar detection, above_vwap |
+| Estructura de precio | dist_kijun, price_pos_daily, atr_consumed, PDH/PDL distances |
 | Mobius Scalper | Momentum de aceleración del precio (8 barras) |
 | HTF Supply & Demand | Zonas de oferta/demanda en M15: dist_htf_res, dist_htf_sup, res_active, sup_active |
 | Contexto HTF | MTF trend confirmado (M15): bullish/bearish/neutral |
@@ -156,7 +157,7 @@ El bot aplica múltiples capas de filtros antes de ejecutar una orden:
 |---|---|
 | **Confianza mínima** | `confidence_threshold = 0.45` (+ 0.25 extra si es contra-tendencia) |
 | **Chop** | Bloquea si `chop_index < 0.6` (mercado lateral) |
-| **Sesión** | Solo opera entre `allowed_sessions = [[5, 19]]` UTC |
+| **Sesión** | Solo opera en `allowed_sessions = [[7, 10], [13, 17]]` UTC (Londres open + NYSE open) |
 | **Límite diario** | Detiene trading si pérdida del día >= `daily_loss_limit_pct = 10%` del balance |
 | **MTF Trend** | Bloquea entradas contra tendencia confirmada M15 (3 barras consecutivas) |
 | **Momentum de barra** | Bloquea si los últimos 2 cierres van en contra de la dirección |
@@ -165,6 +166,9 @@ El bot aplica múltiples capas de filtros antes de ejecutar una orden:
 | **Rango consumido** | Bloquea si > 75% del rango ATR diario ya fue consumido |
 | **Barra de consolidación** | Bloquea si bar_size_ratio < 0.4 |
 | **Proximidad S/R HTF** | Bloquea si el precio está a < 0.05% de una zona activa de oferta/demanda |
+| **Alineación EMA 5/21** | Bloquea LONG si EMA5 < EMA21, SHORT si EMA5 > EMA21 |
+| **Pullback EMA/VWAP** | Bloquea si precio no tocó EMA21 ni VWAP en las últimas 3 barras |
+| **RSI7 agotamiento** | Bloquea LONG si RSI7 > 75, SHORT si RSI7 < 25 |
 | **News Guard** | Bloquea en ventana de ±10/15 min alrededor de noticias USD de alto impacto |
 
 ---
@@ -172,10 +176,11 @@ El bot aplica múltiples capas de filtros antes de ejecutar una orden:
 ## Risk Management
 
 - **Sizing**: `lots = risk_per_trade_usd / (sl_points × tick_value × contract_size)`
-- **SL**: `ATR × sl_atr_multiplier` (0.8)
-- **TP**: `ATR × tp_atr_multiplier` (entre 1.8 y 3.0, dinámico)
-- **Breakeven/Trailing**: cuando el trade alcanza `breakeven_min_profit_usd = $20`, el SL se mueve para bloquear `trail_lock_usd = $20` de ganancia y sigue al precio
-- **Máximo simultáneo**: 2 trades abiertos
+- **SL**: `ATR × sl_atr_multiplier` (0.8) → ~48 pts con ATR típico de 60
+- **TP**: `SL × tp_rr_ratio` (2.0) → ~96 pts, ratio 1:2 fijo
+- **Breakeven/Trailing**: cuando el trade alcanza `breakeven_min_profit_usd = $20`, el SL se mueve para bloquear `trail_lock_usd = $20` de ganancia y sigue al precio (lo que llegue primero entre TP y trailing SL)
+- **Máximo simultáneo**: 1 trade abierto
+- **Pérdidas consecutivas**: bloqueo de dirección tras 2 SL seguidos, cooldown de 5 min
 - **Cierre diario**: fuerza cierre de todas las posiciones a las `daily_close_utc = 20:00` UTC (4 PM ET)
 - **Flip de dirección**: si llega señal contraria con prob >= `flip_confidence_threshold = 0.52`, cierra la posición actual y abre en sentido contrario
 
@@ -274,13 +279,15 @@ news:
 | `sr_proximity_pct` | 0.0005 | Bloqueo S/R: < 0.05% (~15 pts) |
 | `chop_atr_ratio` | 0.6 | Umbral de chop (< = lateral, no operar) |
 | `risk_per_trade_usd` | 30 | Riesgo por trade en USD |
-| `max_simultaneous_trades` | 2 | Máximo trades abiertos |
+| `max_simultaneous_trades` | 1 | Máximo trades abiertos |
+| `consecutive_sl_limit` | 2 | Bloqueo de dirección tras N SL consecutivos |
+| `sl_cooldown_minutes` | 5 | Minutos de cooldown tras bloqueo por SL consecutivos |
 | `daily_loss_limit_pct` | 10% | Stop si pérdida diaria >= 10% del balance |
-| `sl_atr_multiplier` | 0.8 | SL = ATR × 0.8 |
-| `tp_atr_multiplier_min/max` | 1.8 / 3.0 | Rango TP dinámico |
+| `sl_atr_multiplier` | 0.8 | SL = ATR × 0.8 (~48 pts) |
+| `tp_rr_ratio` | 2.0 | TP = SL × 2.0 (~96 pts, ratio 1:2) |
 | `breakeven_min_profit_usd` | 20 | Activar trailing desde $20 de ganancia |
 | `trail_lock_usd` | 20 | SL bloquea $20 detrás del máximo |
-| `allowed_sessions` | [[5, 19]] | Sesión UTC (08:00-22:00 broker UTC+3) |
+| `allowed_sessions` | [[7,10],[13,17]] | Londres open (7-10 UTC) + NYSE open (13-17 UTC) |
 | `daily_close_utc` | 20 | Cierre forzado 4 PM ET |
 
 ---
