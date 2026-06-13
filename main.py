@@ -19,8 +19,13 @@ import time
 import numpy as np
 import yaml
 
+# Cargar credenciales desde .env antes que cualquier otra cosa
+from dotenv import load_dotenv
+load_dotenv()
+
 from data.mt5_feed import MT5Feed
 from data.database import Database
+from data.news_guard import NewsGuard
 from execution.order_sender import OrderSender
 from execution.risk_manager import RiskManager
 from features.pipeline import build_features
@@ -42,6 +47,22 @@ def setup_logging(cfg: dict):
     logging.basicConfig(level=level, format=fmt, handlers=handlers)
 
 log = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------ #
+#  .env credential injection                                          #
+# ------------------------------------------------------------------ #
+
+def inject_env_credentials(cfg: dict):
+    """Override config.yaml mt5 credentials with .env values if present."""
+    env_login = os.getenv("MT5_LOGIN")
+    env_pass  = os.getenv("MT5_PASSWORD")
+    env_srv   = os.getenv("MT5_SERVER")
+    if env_login:
+        cfg["mt5"]["login"] = int(env_login)
+    if env_pass:
+        cfg["mt5"]["password"] = env_pass
+    if env_srv:
+        cfg["mt5"]["server"] = env_srv
 
 # ------------------------------------------------------------------ #
 #  Prediction                                                          #
@@ -304,11 +325,12 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
 
     device = _resolve_device(cfg["model"].get("device", "auto"))
 
-    feed   = MT5Feed(cfg)
-    risk   = RiskManager(cfg, feed)
-    sender = OrderSender(cfg, feed)
-    sw     = StateWriter(device=device)
-    db     = Database()
+    feed       = MT5Feed(cfg)
+    risk       = RiskManager(cfg, feed)
+    sender     = OrderSender(cfg, feed)
+    sw         = StateWriter(device=device)
+    db         = Database()
+    news_guard = NewsGuard(cfg)
     paper_tracker = PaperTracker()
 
     if dashboard:
@@ -421,13 +443,23 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
                 now_utc.hour == close_hour and
                 now_utc.minute >= 59 and
                 today not in daily_close_done):
-                log.info("Daily close 4:59 PM ET -- closing all positions")
+                log.info("Daily close %d:59 UTC -- closing all positions", close_hour)
                 sender.close_all_positions()
                 for t in list(open_tickets.keys()):
                     del open_tickets[t]
                 daily_close_done.add(today)
                 risk._daily_trades = 0
 
+            # Weekend close: Friday 20:55 UTC (4:55 PM ET)
+            if (cfg["risk"].get("weekend_close_friday", False) and
+                now_utc.weekday() == 4 and
+                now_utc.hour == 20 and now_utc.minute >= 55 and
+                today not in daily_close_done):
+                log.info("WEEKEND CLOSE: Friday 4:55 PM ET -- closing all positions")
+                sender.close_all_positions()
+                for t in list(open_tickets.keys()):
+                    del open_tickets[t]
+                daily_close_done.add(today)
 
             # Check paper SL/TP
             if paper and paper_tracker.is_open:
@@ -500,6 +532,11 @@ def run(cfg: dict, paper: bool = False, dashboard: bool = False):
             if stable_trend != 0:
                 log.info("MTF trend: %s (confirmed %d bars)",
                          "BULLISH" if stable_trend == 1 else "BEARISH", MTF_CONFIRM)
+
+            # News guard: bloquear entradas alrededor de eventos de alto impacto USD
+            if news_guard.is_blocked():
+                log.debug("NewsGuard: entrada bloqueada por evento próximo")
+                continue
 
             params = risk.evaluate(signal, prob, atr, chop_index, stable_trend)
             if params is None:
@@ -694,6 +731,7 @@ if __name__ == "__main__":
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
+    inject_env_credentials(cfg)
     setup_logging(cfg)
 
     if args.train_only:

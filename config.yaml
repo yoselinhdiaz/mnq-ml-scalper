@@ -1,22 +1,23 @@
 mt5:
-  login: 202233 # Your MT5 account number
-  password: "hL15058!"
-  server: "GNTCapital-Demo"
+  login: 0              # Se carga desde .env (MT5_LOGIN)
+  password: ""          # Se carga desde .env (MT5_PASSWORD)
+  server: ""            # Se carga desde .env (MT5_SERVER)
   symbol: "US100." # or "MNQc1" depending on broker
   timeframe: "M5"  # 5-minute bars (9 months of history available)
   htf_timeframe: "M15" # Higher timeframe context
   magic: 20250101 # Magic number for bot orders
   contract_size: 10 # Broker multiplier (not exposed via API, verified empirically)
+  broker_utc_offset: 3  # Offset del broker respecto a UTC (UTC+3)
 
 data:
-  lookback_bars: 2000 # Bars to fetch on startup (M5: ~7 days)
+  lookback_bars: 8000 # Bars to fetch on startup (M5: ~30-40 days)
   feature_window: 30 # Rolling window for features
   retrain_interval_hours: 4 # How often to retrain model
   min_bars_to_trade: 100 # Min bars before first trade
 
 model:
   device: auto                     # auto | cuda | cpu
-  confidence_threshold: 0.45      # Min probability -- with trend
+  confidence_threshold: 0.55      # Min probability -- con trend (subido desde 0.45)
   sr_proximity_pct: 0.0005        # Block entries within 0.05% of active HTF S/R (~15 pts)
   counter_trend_boost: 0.25       # Extra confidence going against trend (→ 0.63)
   flip_confidence_threshold: 0.52 # Min probability to flip direction
@@ -26,19 +27,21 @@ model:
   label_threshold_atr: 0.4  # Net move must exceed ATR * this over lookahead
 
 risk:
-  risk_per_trade_usd: 30 # USD risked per trade
+  risk_per_trade_pct: 0.0035    # 0.35% del equity de la cuenta por trade (equity-relative)
   max_simultaneous_trades: 1
   daily_loss_limit_pct: 0.10 # Stop trading if daily loss >= 10% of account balance
   sl_atr_multiplier: 0.8
   consecutive_sl_limit: 2    # Block direction after N consecutive SL losses
   sl_cooldown_minutes: 10   # Minutes to block after hitting consecutive_sl_limit
-  breakeven_min_profit_usd: 999 # Trailing desactivado -- dejar que TP/SL de MT5 trabajen solos
+  breakeven_min_profit_usd: 15  # Trailing activo al llegar a $15 de profit
   trail_lock_usd: 20            # Trail SL $20 behind the maximum profit seen
   tp_rr_ratio: 2.0             # TP = SL x 2.0  (1:2 R/R)
   tp_atr_multiplier_min: 1.8
   tp_atr_multiplier_max: 3.0
-  allowed_sessions: []  # sin restriccion de sesion -- opera las 24h
+  allowed_sessions:             # NQ: regular session 9 AM - 4 PM ET = 14:00-20:00 UTC
+    - [14, 20]
   daily_close_utc: 20  # Force close all positions at this UTC hour (20 = 4 PM ET)
+  weekend_close_friday: true    # Flatten all positions by Friday 20:55 UTC (4:55 PM ET)
 
 news:
   enabled: true

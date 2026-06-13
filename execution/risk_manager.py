@@ -182,21 +182,30 @@ class RiskManager:
         return None
 
     def _size_trade(self, direction: int, atr: float) -> Optional[TradeParams]:
-        risk_usd    = self.cfg["risk"]["risk_per_trade_usd"]
-        sl_mult     = self.cfg["risk"]["sl_atr_multiplier"]
-        tp_min      = self.cfg["risk"]["tp_atr_multiplier_min"]
-        tp_max      = self.cfg["risk"]["tp_atr_multiplier_max"]
+        sl_mult = self.cfg["risk"]["sl_atr_multiplier"]
+        tp_min  = self.cfg["risk"]["tp_atr_multiplier_min"]
+        tp_max  = self.cfg["risk"]["tp_atr_multiplier_max"]
 
-        tick_value     = self.feed.get_tick_value()  # USD per tick per lot
-        point          = self.feed.get_point()
-        contract_size  = self.cfg["mt5"].get("contract_size", 1)
+        # Soporte para equity-relative (risk_per_trade_pct) o fixed USD
+        if "risk_per_trade_pct" in self.cfg["risk"]:
+            balance  = self.feed.get_balance()
+            risk_pct = self.cfg["risk"]["risk_per_trade_pct"]
+            risk_usd = max(balance * risk_pct, 1.0)
+            log.debug("Sizing (equity): balance=%.2f pct=%.4f risk_usd=%.2f",
+                      balance, risk_pct, risk_usd)
+        else:
+            risk_usd = self.cfg["risk"]["risk_per_trade_usd"]
+
+        tick_value    = self.feed.get_tick_value()
+        point         = self.feed.get_point()
+        contract_size = self.cfg["mt5"].get("contract_size", 1)
         if tick_value == 0 or point == 0:
             return None
 
         sl_points   = sl_mult * atr
         usd_per_lot = (sl_points / point) * tick_value * contract_size
         lots        = round(risk_usd / usd_per_lot, 2) if usd_per_lot > 0 else 0.01
-        lots        = max(0.01, min(lots, 5.0))  # cap at 5 lots
+        lots        = max(0.01, min(lots, 5.0))
 
         tp_ratio  = self.cfg["risk"].get("tp_rr_ratio", 2.0)
         tp_points = sl_points * tp_ratio

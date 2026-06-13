@@ -21,8 +21,9 @@ from features.pipeline import build_features, make_labels
 
 log = logging.getLogger(__name__)
 
-MODEL_PATH = "logs/model.joblib"
+MODEL_PATH  = "logs/model.joblib"
 SCALER_PATH = "logs/scaler.joblib"
+MODEL_VERSIONS_MAX = 3  # Mantener los últimos N modelos versionados
 
 
 # ------------------------------------------------------------------ #
@@ -57,9 +58,8 @@ def train(
     # Filter to active trading sessions only (same hours the bot will trade)
     sessions = cfg["risk"].get("allowed_sessions", [])
     if sessions:
-        # DB timestamps are in broker time (UTC+3); allowed_sessions is UTC
-        # broker_hour = utc_hour + 3
-        utc_offset = 3
+        # DB timestamps are in broker time (UTC+offset); allowed_sessions is UTC
+        utc_offset = cfg.get("mt5", {}).get("broker_utc_offset", 3)
         def in_session(ts):
             broker_h = ts.hour
             return any((s * 1.0 + utc_offset) % 24 <= broker_h < (e * 1.0 + utc_offset) % 24
@@ -211,6 +211,22 @@ def _compute_weights(y: np.ndarray) -> np.ndarray:
 
 
 def _save(model, scaler):
+    import glob as _glob
+    from datetime import datetime as _dt
     os.makedirs("logs", exist_ok=True)
     joblib.dump(model, MODEL_PATH)
     joblib.dump(scaler, SCALER_PATH)
+
+    # Guardar copia versionada y limpiar versiones antiguas
+    ts = _dt.utcnow().strftime("%Y%m%d_%H%M%S")
+    joblib.dump(model,  f"logs/model_{ts}.joblib")
+    joblib.dump(scaler, f"logs/scaler_{ts}.joblib")
+
+    for pattern, keep in (("logs/model_????????_??????.joblib", MODEL_VERSIONS_MAX),
+                           ("logs/scaler_????????_??????.joblib", MODEL_VERSIONS_MAX)):
+        files = sorted(_glob.glob(pattern))
+        for old in files[:-keep]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
